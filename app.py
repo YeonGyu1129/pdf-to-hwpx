@@ -48,6 +48,16 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
     # "X" → rm{X}  (따옴표는 mathrm 변환에서만 나오는 것으로 가정)
     out = re.sub(r'"([^"]+)"', r"rm{\1}", out)
+    # ^{prime} → ' prime '  (위첨자 대신 한 칸 띄고 prime 키워드, 뒤에도 공백)
+    #   예: rm{A}^{prime}rm{B} → rm{A} prime rm{B}
+    #       ^{primeprime}      → ' prime prime '
+    def _prime_sub(m: re.Match) -> str:
+        count = len(m.group(1)) // 5  # "prime" = 5 글자
+        return " " + " ".join(["prime"] * count) + " "
+
+    out = re.sub(r"\^\{((?:prime)+)\}", _prime_sub, out)
+    # 여분의 공백 정리 (뒤에 공백이 이미 있거나 문자열 끝인 경우)
+    out = re.sub(r" +", " ", out).strip()
     return out
 
 
@@ -566,24 +576,54 @@ def _auto_mathrm(latex: str) -> str:
     # 5) placeholder 복원
     s = re.sub(r"\x00(\d+)\x00", lambda m: protected[int(m.group(1))], s)
 
-    # 6) \mathrm{...} 안의 apostrophe(')를 바깥의 ^{\prime} 로 분리
-    #    hwpEQ 변환기는 \mathrm{O'A'B'} 를 "O'A'B'" (문자열)로 처리해 프라임이
-    #    제대로 렌더되지 않음. \mathrm{O}^{\prime}\mathrm{A}^{\prime}\mathrm{B}^{\prime}
-    #    형태로 바꾸면 "O"^{prime}"A"^{prime}"B"^{prime} 가 되어 정상 렌더됨.
-    def _split_primes_in_mathrm(match: re.Match) -> str:
-        content = match.group(1)
-        if "'" not in content:
-            return match.group(0)
+    # 6) \mathrm{...} 블록 정규화
+    #    - 순수 대문자만 있으면 그대로 유지
+    #    - 프라임(')이 있으면 \mathrm{O}^{\prime}... 형태로 분리
+    #    - 소문자/숫자/연산자 등 혼합 내용이 있으면
+    #      → 대문자만 \mathrm 에 남기고 나머지는 바깥으로 빼냄
+    #        (그래야 x, y 같은 변수가 이탤릭으로 렌더됨)
+    def _split_primes_run(text: str) -> str:
+        """'O'A'B'' 같은 대문자+프라임 연속을 hwpEQ 호환 형태로."""
         parts: list[str] = []
-        for m in re.finditer(r"([A-Z])(\'*)", content):
+        for m in re.finditer(r"([A-Z])(\'*)", text):
             letter, primes = m.group(1), m.group(2)
             parts.append(f"\\mathrm{{{letter}}}")
             if primes:
-                # 여러 프라임은 ^{\prime\prime...} 로 합쳐서 안전하게
                 parts.append("^{" + r"\prime" * len(primes) + "}")
         return "".join(parts)
 
-    s = re.sub(r"\\mathrm\{([^{}]*)\}", _split_primes_in_mathrm, s)
+    def _normalize_mathrm(match: re.Match) -> str:
+        content = match.group(1)
+        # 1) 순수 대문자만
+        if re.fullmatch(r"[A-Z]+", content):
+            return match.group(0)
+        # 2) 대문자 + 프라임만
+        if re.fullmatch(r"[A-Z']+", content) and "'" in content:
+            return _split_primes_run(content)
+        # 3) 혼합 내용 — 대문자 run 만 \mathrm, 나머지는 바깥으로
+        result: list[str] = []
+        i = 0
+        n = len(content)
+        while i < n:
+            c = content[i]
+            if c.isupper() and c.isalpha():
+                j = i
+                while j < n and (
+                    (content[j].isupper() and content[j].isalpha()) or content[j] == "'"
+                ):
+                    j += 1
+                chunk = content[i:j]
+                if "'" in chunk:
+                    result.append(_split_primes_run(chunk))
+                else:
+                    result.append(f"\\mathrm{{{chunk}}}")
+                i = j
+            else:
+                result.append(c)
+                i += 1
+        return "".join(result)
+
+    s = re.sub(r"\\mathrm\{([^{}]*)\}", _normalize_mathrm, s)
     return s
 
 
