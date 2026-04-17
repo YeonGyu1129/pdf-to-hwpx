@@ -480,42 +480,78 @@ def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str
 
 def _auto_mathrm(latex: str) -> str:
     """
-    formula 내용에 자동으로 \\mathrm 을 보완하고 잘못된 집합 기호를 교정.
-    - \\overline{AB} → \\overline{\\mathrm{AB}}
-    - \\overrightarrow{AB} → \\overrightarrow{\\mathrm{AB}}
-    - \\overleftrightarrow{AB} → \\overleftrightarrow{\\mathrm{AB}}
-    - \\triangle ABC → \\triangle \\mathrm{ABC}
-    - \\angle ABC → \\angle \\mathrm{ABC}
-    - \\square ABCD → \\square \\mathrm{ABCD}
-    - \\bigcup / \\bigcap → \\cup / \\cap
+    수식 안의 대문자(점·선분·집합 등)에 자동으로 \\mathrm 을 적용하고
+    잘못된 기호를 교정합니다.
+
+    전략:
+    1) \\bigcup / \\bigcap → \\cup / \\cap
+    2) 이미 \\mathrm / \\text / \\mathbb / \\mathcal ... 안에 있는 블록은 placeholder 로 보호
+    3) 모든 LaTeX 명령 토큰(\\triangle 등)도 placeholder 로 보호
+    4) 남은 곳에서 대문자 연속(프라임 포함)을 \\mathrm{...} 으로 감싸기
+    5) placeholder 복원
+
+    결과 예시:
+      O(0,0)               → \\mathrm{O}(0,0)
+      \\triangle OAB       → \\triangle \\mathrm{OAB}
+      \\triangle O'A'B'    → \\triangle \\mathrm{O'A'B'}
+      \\overline{AB}       → \\overline{\\mathrm{AB}}
+      A\\cup B\\cup C      → \\mathrm{A}\\cup \\mathrm{B}\\cup \\mathrm{C}
+      P_0                  → \\mathrm{P}_0
+      \\mathbb{R}          → \\mathbb{R}   (변경 없음)
+      x^2+y^2+ax+by+c      → (변경 없음)
     """
     s = latex
 
-    # 집합 기호 교정 (전체집합 기호를 그냥 합/교집합으로)
+    # 1) 큰 합/교집합 교정
     s = s.replace(r"\bigcup", r"\cup")
     s = s.replace(r"\bigcap", r"\cap")
 
-    # \overline{AB} 같이 괄호 안 전부 대문자면 \mathrm 감싸기 (이미 mathrm 있으면 skip)
-    def _wrap_mathrm_in_braces(match: re.Match) -> str:
-        cmd = match.group(1)
-        inner = match.group(2)
-        if "\\mathrm" in inner or "\\text" in inner:
+    # 2-3) 보호(placeholder 치환)
+    protected: list[str] = []
+
+    def _save(match: re.Match) -> str:
+        idx = len(protected)
+        protected.append(match.group(0))
+        return f"\x00{idx}\x00"
+
+    # 2) 이미 스타일이 적용된 블록 보호 (인수 포함)
+    s = re.sub(
+        r"\\(?:mathrm|text|operatorname|mathbb|mathcal|mathbf|mathit|mathsf|mathfrak)\{[^{}]*\}",
+        _save,
+        s,
+    )
+    # 3) LaTeX 명령 토큰 보호 (인수 없음). 예: \triangle, \overline, \frac, \cup, \sin
+    s = re.sub(r"\\[a-zA-Z]+", _save, s)
+
+    # 4) 대문자 연속(프라임 포함)을 \mathrm{...} 로 감싸기
+    #    - (?:[A-Z]'*)+  : 대문자 1개 뒤에 0개 이상의 프라임, 이 조합이 1회 이상
+    s = re.sub(
+        r"(?:[A-Z]'*)+",
+        lambda m: f"\\mathrm{{{m.group(0)}}}",
+        s,
+    )
+
+    # 5) placeholder 복원
+    s = re.sub(r"\x00(\d+)\x00", lambda m: protected[int(m.group(1))], s)
+
+    # 6) \mathrm{...} 안의 apostrophe(')를 바깥의 ^{\prime} 로 분리
+    #    hwpEQ 변환기는 \mathrm{O'A'B'} 를 "O'A'B'" (문자열)로 처리해 프라임이
+    #    제대로 렌더되지 않음. \mathrm{O}^{\prime}\mathrm{A}^{\prime}\mathrm{B}^{\prime}
+    #    형태로 바꾸면 "O"^{prime}"A"^{prime}"B"^{prime} 가 되어 정상 렌더됨.
+    def _split_primes_in_mathrm(match: re.Match) -> str:
+        content = match.group(1)
+        if "'" not in content:
             return match.group(0)
-        if re.fullmatch(r"[A-Z]{1,6}", inner):
-            return f"\\{cmd}{{\\mathrm{{{inner}}}}}"
-        return match.group(0)
+        parts: list[str] = []
+        for m in re.finditer(r"([A-Z])(\'*)", content):
+            letter, primes = m.group(1), m.group(2)
+            parts.append(f"\\mathrm{{{letter}}}")
+            if primes:
+                # 여러 프라임은 ^{\prime\prime...} 로 합쳐서 안전하게
+                parts.append("^{" + r"\prime" * len(primes) + "}")
+        return "".join(parts)
 
-    over_cmds = "overline|overrightarrow|overleftarrow|overleftrightarrow|underline|widehat"
-    s = re.sub(rf"\\({over_cmds})\{{([^{{}}]+)\}}", _wrap_mathrm_in_braces, s)
-
-    # \triangle ABC, \angle ABC, \square ABCD 뒤 대문자열
-    def _wrap_after_cmd(match: re.Match) -> str:
-        cmd = match.group(1)
-        letters = match.group(2)
-        return f"\\{cmd} \\mathrm{{{letters}}}"
-
-    s = re.sub(r"\\(triangle|angle|square)\s+([A-Z]{2,6})(?![A-Za-z])", _wrap_after_cmd, s)
-
+    s = re.sub(r"\\mathrm\{([^{}]*)\}", _split_primes_in_mathrm, s)
     return s
 
 
