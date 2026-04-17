@@ -506,6 +506,19 @@ def _auto_mathrm(latex: str) -> str:
     s = s.replace(r"\bigcup", r"\cup")
     s = s.replace(r"\bigcap", r"\cap")
 
+    # 1-b) 삼각/로그/극한 함수 앞 백슬래시 누락 보정
+    # Vision 이 \sin, \cos, \log 에서 백슬래시를 빠뜨리면 변수로 렌더됨
+    # 앞뒤가 알파벳/백슬래시가 아닌 경우에만 (단어 중간이 아닌 경우)
+    _FUNCS = (
+        "sin", "cos", "tan", "cot", "sec", "csc",
+        "sinh", "cosh", "tanh",
+        "log", "ln", "lg", "exp",
+        "lim", "max", "min", "det", "gcd",
+    )
+    # 긴 이름부터 처리 (sinh 가 sin 으로 오인되지 않게)
+    for fn in sorted(_FUNCS, key=len, reverse=True):
+        s = re.sub(rf"(?<![A-Za-z\\])({fn})(?![A-Za-z])", rf"\\{fn}", s)
+
     # 2-3) 보호(placeholder 치환)
     protected: list[str] = []
 
