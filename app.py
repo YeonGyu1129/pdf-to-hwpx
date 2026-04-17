@@ -347,10 +347,13 @@ def prepare_image_for_vision(path: Path) -> tuple[bytes, str]:
     return buf.getvalue(), "image/jpeg"
 
 
-def vision_recognize(client: Anthropic, image_paths: list[Path]) -> str:
-    """이미지들을 Claude Vision 으로 읽어 LaTeX 섞인 평문 반환."""
+def vision_recognize(client: Anthropic, image_paths: list[Path]) -> list[str]:
+    """이미지들을 Claude Vision 으로 읽어 **페이지별** LaTeX 섞인 평문 리스트 반환."""
     outputs: list[str] = []
+    progress = st.progress(0.0, text="Vision 인식 준비 중…")
+    total = len(image_paths)
     for idx, path in enumerate(image_paths, 1):
+        progress.progress((idx - 1) / total, text=f"Vision 인식 중… ({idx}/{total})")
         img_bytes, mime = prepare_image_for_vision(path)
         img_b64 = base64.b64encode(img_bytes).decode()
         resp = client.messages.create(
@@ -374,10 +377,35 @@ def vision_recognize(client: Anthropic, image_paths: list[Path]) -> str:
             ],
         )
         outputs.append(resp.content[0].text)
-    return "\n\n".join(outputs)
+    progress.progress(1.0, text="Vision 인식 완료")
+    return outputs
 
 
-def structure_problems(client: Anthropic, raw_text: str) -> list[dict[str, Any]]:
+def _parse_json_loose(text: str) -> dict[str, Any]:
+    """코드펜스 제거 후 json.loads. 실패 시 가장 큰 균형잡힌 { ... } 블록만 시도."""
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 잘린 응답 복구 시도: 마지막 완전한 } 까지만 사용
+        last = text.rfind("]")
+        if last > 0:
+            candidate = text[: last + 1]
+            # problems 배열만 추출해보기
+            m = re.search(r'"problems"\s*:\s*\[', candidate)
+            if m:
+                inner = candidate[m.end():]
+                try:
+                    arr = json.loads("[" + inner + "]" if not inner.endswith("]") else inner)
+                    return {"problems": arr if isinstance(arr, list) else []}
+                except Exception:
+                    pass
+        raise
+
+
+def structure_single(client: Anthropic, raw_text: str) -> list[dict[str, Any]]:
+    """페이지 하나의 평문을 JSON 으로 구조화."""
     resp = client.messages.create(
         model=EXTRACT_MODEL,
         max_tokens=MAX_TOKENS,
@@ -388,11 +416,28 @@ def structure_problems(client: Anthropic, raw_text: str) -> list[dict[str, Any]]
             }
         ],
     )
-    text = resp.content[0].text.strip()
-    # 혹시 모를 코드펜스 제거
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
-    data = json.loads(text)
-    return sanitize_problems(data.get("problems", []))
+    text = resp.content[0].text
+    data = _parse_json_loose(text)
+    return data.get("problems", [])
+
+
+def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str, Any]]:
+    """페이지별로 따로 구조화한 뒤 하나의 problems 리스트로 병합."""
+    all_problems: list[dict[str, Any]] = []
+    progress = st.progress(0.0, text="문제 구조화 준비 중…")
+    total = len(raw_texts)
+    for idx, page_text in enumerate(raw_texts, 1):
+        progress.progress((idx - 1) / total, text=f"문제 구조화 중… ({idx}/{total})")
+        if not page_text.strip():
+            continue
+        try:
+            page_problems = structure_single(client, page_text)
+        except json.JSONDecodeError as e:
+            st.warning(f"페이지 {idx} 구조화 실패: {e}. 이 페이지는 건너뜁니다.")
+            continue
+        all_problems.extend(page_problems)
+    progress.progress(1.0, text="문제 구조화 완료")
+    return sanitize_problems(all_problems)
 
 
 def _clean_segment(seg: Any) -> dict[str, Any] | None:
@@ -583,19 +628,21 @@ def main() -> None:
                 return
             status.update(label=f"이미지 {len(image_paths)}장 준비 완료", state="complete")
 
-        # 3) Vision 인식
+        # 3) Vision 인식 (페이지별 리스트 반환)
         with st.status("Claude Vision 인식 중…", expanded=False) as status:
-            raw_text = vision_recognize(client, image_paths)
-            status.update(label="Vision 인식 완료", state="complete")
+            raw_texts = vision_recognize(client, image_paths)
+            status.update(label=f"Vision 인식 완료 ({len(raw_texts)}장)", state="complete")
 
         if show_raw:
             with st.expander("📝 Vision 인식 원문"):
-                st.code(raw_text, language="markdown")
+                for i, t in enumerate(raw_texts, 1):
+                    st.markdown(f"**페이지 {i}**")
+                    st.code(t, language="markdown")
 
-        # 4) 구조화
+        # 4) 구조화 (페이지별로 나눠 호출 → 병합)
         with st.status("문제 구조화 중…", expanded=False) as status:
             try:
-                problems = structure_problems(client, raw_text)
+                problems = structure_problems(client, raw_texts)
             except json.JSONDecodeError as e:
                 status.update(label="JSON 파싱 실패", state="error")
                 st.exception(e)
