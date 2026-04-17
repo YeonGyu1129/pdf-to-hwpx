@@ -23,6 +23,12 @@ from typing import Any
 import streamlit as st
 from anthropic import Anthropic
 
+try:
+    from streamlit_paste_button import paste_image_button as _paste_image_button
+    PASTE_AVAILABLE = True
+except ImportError:
+    PASTE_AVAILABLE = False
+
 # pdf_to_hwpx 스크립트를 라이브러리로 로드 (수정 없이 그대로 사용)
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
@@ -66,21 +72,53 @@ VISION_PROMPT = r"""이 이미지에 있는 수학 문제를 정확히 인식하
 - ❌ "점 A와 점 B 사이 거리" (잘못됨)
 - ✅ "점 $\mathrm{A}$와 점 $\mathrm{B}$ 사이 거리"
 
-## ⭐ 기하 기호 로만체 — 매우 중요
-점·선분·각·삼각형을 나타내는 **알파벳 대문자**는 반드시 `\mathrm{}` 로 감싸서 로만체로.
+## ⭐ 기하 기호 로만체 — 매우 중요 (반복 강조)
+점·선분·각·삼각형·사각형을 나타내는 **알파벳 대문자**는 반드시 `\mathrm{}` 로 감싸서 로만체로 처리하세요. **예외 없음.**
 
 | 대상 | LaTeX 표기 |
 |------|-----------|
 | 점 A | `$\mathrm{A}$` |
+| 점 P (아래첨자) | `$\mathrm{P}_0$`, `$\mathrm{P}_1$` |
+| 좌표가 있는 점 | `$\mathrm{A}(1, 0)$`, `$\mathrm{B}(6, 5)$` |
 | 선분 AB | `$\overline{\mathrm{AB}}$` |
 | 직선 AB | `$\overleftrightarrow{\mathrm{AB}}$` |
 | 반직선 AB | `$\overrightarrow{\mathrm{AB}}$` |
 | 각 ABC | `$\angle \mathrm{ABC}$` |
 | 삼각형 ABC | `$\triangle \mathrm{ABC}$` |
+| 사각형 ABCD | `$\square \mathrm{ABCD}$` |
 | 호 AB | `$\overset{\frown}{\mathrm{AB}}$` |
+| 선분의 합 | `$\overline{\mathrm{AP}} + \overline{\mathrm{BP}}$` |
 
-- 여러 글자로 된 기하 라벨은 **모두** `\mathrm{}` 안에 묶어서 한 번에 씀 (예: `\mathrm{AB}` — 따로 쓰지 말 것)
-- 변수 `$a, b, x$` 등은 `\mathrm` 붙이지 말 것 (이탤릭 유지)
+규칙:
+- 여러 글자로 된 기하 라벨은 **한 번에** `\mathrm{AB}` 로 묶어 쓸 것 (`\mathrm{A}\mathrm{B}` 아님)
+- 아래첨자가 있어도 점 글자는 로만체: `\mathrm{P}_0`, `\mathrm{A}_1`
+- 변수 `$a, b, x, y, n, k$` 등은 **절대** `\mathrm` 붙이지 말 것 (이탤릭 유지)
+
+⚠️ 흔한 실수 (이렇게 하지 마세요):
+- ❌ `$A(1,0)$` → ✅ `$\mathrm{A}(1, 0)$`
+- ❌ `$\overline{AP}+\overline{BP}$` → ✅ `$\overline{\mathrm{AP}} + \overline{\mathrm{BP}}$`
+- ❌ `$P_0$` → ✅ `$\mathrm{P}_0$`
+- ❌ `$\triangle ABC$` → ✅ `$\triangle \mathrm{ABC}$`
+
+## ⭐ 집합 기호 — 반드시 정확하게
+| 뜻 | 사용할 LaTeX | 잘못된 예 |
+|----|-------------|----------|
+| 합집합 | `\cup` | ❌ `\bigcup` (큰 연산자) |
+| 교집합 | `\cap` | ❌ `\bigcap` (큰 연산자) |
+| 여러 개 합집합 | `A \cup B \cup C` | ❌ `\bigcup ABC` |
+| 공집합 | `\emptyset` 또는 `\varnothing` | |
+| 부분집합 | `\subset`, `\subseteq` | |
+| 원소 개수 | `n(\mathrm{A})` | |
+
+예:
+- ✅ `$n(\mathrm{A} \cup \mathrm{B} \cup \mathrm{C}) = 3$`
+- ✅ `$\mathrm{A} \cap \mathrm{B} = \emptyset$`
+- ❌ `$n(A\bigcup B\bigcup C)$` ← 이렇게 쓰지 말 것
+
+## ⭐ 숫자는 문맥에 따라
+- "제1사분면", "1학년" 등 — **수학 문맥**이면 수식: `제$1$사분면`
+- "1등급", "페이지 1" 등 일반 문맥은 텍스트 그대로 가능
+- 애매하면 수식 처리를 우선
 
 ## ⭐ 객관식 보기 — 매우 중요
 ①②③④⑤ 로 시작하는 객관식 보기는 본문 뒤에 **반드시 줄바꿈**해서 각각 **새 줄**에 쓰세요.
@@ -440,6 +478,47 @@ def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str
     return sanitize_problems(all_problems)
 
 
+def _auto_mathrm(latex: str) -> str:
+    """
+    formula 내용에 자동으로 \\mathrm 을 보완하고 잘못된 집합 기호를 교정.
+    - \\overline{AB} → \\overline{\\mathrm{AB}}
+    - \\overrightarrow{AB} → \\overrightarrow{\\mathrm{AB}}
+    - \\overleftrightarrow{AB} → \\overleftrightarrow{\\mathrm{AB}}
+    - \\triangle ABC → \\triangle \\mathrm{ABC}
+    - \\angle ABC → \\angle \\mathrm{ABC}
+    - \\square ABCD → \\square \\mathrm{ABCD}
+    - \\bigcup / \\bigcap → \\cup / \\cap
+    """
+    s = latex
+
+    # 집합 기호 교정 (전체집합 기호를 그냥 합/교집합으로)
+    s = s.replace(r"\bigcup", r"\cup")
+    s = s.replace(r"\bigcap", r"\cap")
+
+    # \overline{AB} 같이 괄호 안 전부 대문자면 \mathrm 감싸기 (이미 mathrm 있으면 skip)
+    def _wrap_mathrm_in_braces(match: re.Match) -> str:
+        cmd = match.group(1)
+        inner = match.group(2)
+        if "\\mathrm" in inner or "\\text" in inner:
+            return match.group(0)
+        if re.fullmatch(r"[A-Z]{1,6}", inner):
+            return f"\\{cmd}{{\\mathrm{{{inner}}}}}"
+        return match.group(0)
+
+    over_cmds = "overline|overrightarrow|overleftarrow|overleftrightarrow|underline|widehat"
+    s = re.sub(rf"\\({over_cmds})\{{([^{{}}]+)\}}", _wrap_mathrm_in_braces, s)
+
+    # \triangle ABC, \angle ABC, \square ABCD 뒤 대문자열
+    def _wrap_after_cmd(match: re.Match) -> str:
+        cmd = match.group(1)
+        letters = match.group(2)
+        return f"\\{cmd} \\mathrm{{{letters}}}"
+
+    s = re.sub(r"\\(triangle|angle|square)\s+([A-Z]{2,6})(?![A-Za-z])", _wrap_after_cmd, s)
+
+    return s
+
+
 def _clean_segment(seg: Any) -> dict[str, Any] | None:
     """세그먼트 1개 정리. content 가 없거나 비어있으면 None."""
     if not isinstance(seg, dict):
@@ -455,6 +534,8 @@ def _clean_segment(seg: Any) -> dict[str, Any] | None:
     content = str(content)
     if not content:
         return None
+    if seg_type == "formula":
+        content = _auto_mathrm(content)
     return {"type": seg_type, "content": content}
 
 
@@ -539,10 +620,24 @@ def pdf_to_images(pdf_path: Path, workdir: Path, dpi: int = 200) -> list[Path]:
     return paths
 
 
-def collect_input_images(uploaded, workdir: Path, dpi: int = 150) -> list[Path]:
-    """업로드된 파일(이미지 혹은 PDF) → 이미지 경로 리스트."""
+def collect_input_images(
+    uploaded,
+    workdir: Path,
+    dpi: int = 150,
+    pasted_images: list[bytes] | None = None,
+) -> list[Path]:
+    """업로드된 파일(이미지/PDF) + 붙여넣은 PNG 바이트 → 이미지 경로 리스트."""
     image_paths: list[Path] = []
-    for up in uploaded:
+
+    # 붙여넣은 이미지 먼저 저장
+    if pasted_images:
+        for i, data in enumerate(pasted_images, 1):
+            p = workdir / f"pasted_{i:03d}.png"
+            p.write_bytes(data)
+            image_paths.append(p)
+
+    # 업로드된 파일 처리
+    for up in uploaded or []:
         suffix = Path(up.name).suffix.lower()
         saved = workdir / up.name
         saved.write_bytes(up.getvalue())
@@ -554,6 +649,7 @@ def collect_input_images(uploaded, workdir: Path, dpi: int = 150) -> list[Path]:
             image_paths.extend(pdf_to_images(saved, workdir, dpi=dpi))
         else:
             st.warning(f"지원하지 않는 형식 무시: {up.name}")
+
     return image_paths
 
 
@@ -594,14 +690,97 @@ def main() -> None:
         accept_multiple_files=True,
     )
 
+    # ── 클립보드 붙여넣기 영역 ──
+    if "pasted_images" not in st.session_state:
+        st.session_state.pasted_images = []  # list[bytes]
+
+    if PASTE_AVAILABLE:
+        st.markdown("**또는 클립보드에서 이미지 붙여넣기**  `⌘V` / `Ctrl+V` 로 바로 붙여넣기 가능")
+        col_paste, col_clear = st.columns([3, 1])
+        with col_paste:
+            pasted = _paste_image_button(
+                label="📋 클립보드에서 붙여넣기",
+                key="clip_paste",
+                errors="ignore",
+            )
+            if pasted.image_data is not None:
+                from io import BytesIO
+                buf = BytesIO()
+                pasted.image_data.save(buf, format="PNG")
+                img_bytes = buf.getvalue()
+                # 중복 방지: 같은 바이트가 이미 있으면 skip
+                if img_bytes not in st.session_state.pasted_images:
+                    st.session_state.pasted_images.append(img_bytes)
+        with col_clear:
+            if st.session_state.pasted_images and st.button("🗑 비우기"):
+                st.session_state.pasted_images = []
+                st.rerun()
+
+        # ⌘V / Ctrl+V 가 눌리면 위의 붙여넣기 버튼을 자동 클릭
+        # (브라우저 보안상 완전한 "아무데서나 Cmd+V" 는 어렵지만, 키 입력 시 버튼 클릭을
+        #  대신 트리거해주면 사용자 체감상 같은 UX가 됩니다)
+        st.components.v1.html(
+            """
+            <script>
+            (function() {
+                const topDoc = window.parent.document;
+                if (topDoc.__pasteShortcutBound) return;
+                topDoc.__pasteShortcutBound = true;
+
+                topDoc.addEventListener('keydown', function(e) {
+                    const isPaste = (e.metaKey || e.ctrlKey) && (e.key === 'v' || e.key === 'V');
+                    if (!isPaste) return;
+
+                    // 입력 필드에서 입력 중이면 정상 동작 우선
+                    const ae = topDoc.activeElement;
+                    const tag = ae && ae.tagName ? ae.tagName.toLowerCase() : '';
+                    const isEditable = ae && (ae.isContentEditable
+                        || tag === 'input' || tag === 'textarea');
+                    if (isEditable) return;
+
+                    // streamlit-paste-button 의 내부 버튼을 찾아 클릭
+                    const frames = topDoc.querySelectorAll('iframe');
+                    for (const f of frames) {
+                        try {
+                            const doc = f.contentDocument;
+                            if (!doc) continue;
+                            const btns = doc.querySelectorAll('button');
+                            for (const b of btns) {
+                                if (b.innerText && b.innerText.includes('붙여넣기')) {
+                                    e.preventDefault();
+                                    b.click();
+                                    return;
+                                }
+                            }
+                        } catch (_err) {
+                            // cross-origin iframe — skip
+                        }
+                    }
+                }, true);
+            })();
+            </script>
+            """,
+            height=0,
+        )
+
+        if st.session_state.pasted_images:
+            st.caption(f"붙여넣은 이미지: {len(st.session_state.pasted_images)}장")
+            cols = st.columns(min(4, len(st.session_state.pasted_images)))
+            for i, img_bytes in enumerate(st.session_state.pasted_images):
+                with cols[i % len(cols)]:
+                    st.image(img_bytes, caption=f"#{i+1}", use_container_width=True)
+    else:
+        st.info("붙여넣기 기능을 쓰려면 `streamlit-paste-button` 을 설치하세요.")
+
     uploaded_template = st.file_uploader(
         "HWPX 템플릿 업로드 (선택 — 기본 template.hwpx 가 있으면 생략 가능)",
         type=["hwpx"],
         accept_multiple_files=False,
     )
 
-    if not uploaded:
-        st.info("변환할 파일을 업로드하세요.")
+    has_input = bool(uploaded) or bool(st.session_state.pasted_images)
+    if not has_input:
+        st.info("변환할 파일을 업로드하거나 이미지를 붙여넣으세요.")
         return
 
     if not st.button("🚀 변환 시작", type="primary"):
@@ -622,7 +801,12 @@ def main() -> None:
 
         # 2) 입력 → 이미지
         with st.status("입력 파일 처리 중…", expanded=True) as status:
-            image_paths = collect_input_images(uploaded, workdir, dpi=dpi)
+            image_paths = collect_input_images(
+                uploaded,
+                workdir,
+                dpi=dpi,
+                pasted_images=st.session_state.get("pasted_images", []),
+            )
             if not image_paths:
                 status.update(label="처리할 이미지가 없습니다.", state="error")
                 return
