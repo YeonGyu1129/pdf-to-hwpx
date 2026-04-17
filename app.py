@@ -296,12 +296,63 @@ def _mime_for(path: Path) -> str:
     }.get(ext, "image/jpeg")
 
 
+# Claude API 이미지 제한
+MAX_IMAGE_DIM = 2000          # 긴 변 최대 픽셀
+MAX_IMAGE_BYTES = 4_500_000   # 안전 여유(5MB 제한 대비)
+JPEG_QUALITY_START = 88
+
+
+def prepare_image_for_vision(path: Path) -> tuple[bytes, str]:
+    """
+    Claude API 에 전송하기 전에 이미지 크기를 줄입니다.
+    - 긴 변이 MAX_IMAGE_DIM 초과면 비율 유지 축소
+    - JPEG 로 변환하고 크기가 여전히 크면 품질을 낮춰 재압축
+    - 원본이 이미 작고 JPEG/PNG 면 원본 그대로 반환
+    """
+    from io import BytesIO
+    from PIL import Image
+
+    # 원본 크기가 제한 미만이고 이미 JPEG/PNG 면 그대로 전송
+    size = path.stat().st_size
+    if size < MAX_IMAGE_BYTES and path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+        return path.read_bytes(), _mime_for(path)
+
+    img = Image.open(path)
+
+    # RGBA/팔레트 → RGB (JPEG 저장용)
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+
+    # 긴 변 축소
+    w, h = img.size
+    longest = max(w, h)
+    if longest > MAX_IMAGE_DIM:
+        scale = MAX_IMAGE_DIM / longest
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # JPEG 로 품질 낮춰가며 압축
+    quality = JPEG_QUALITY_START
+    while quality >= 50:
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= MAX_IMAGE_BYTES:
+            return data, "image/jpeg"
+        quality -= 10
+
+    # 그래도 크면 더 축소한 뒤 재시도
+    img = img.resize((img.size[0] // 2, img.size[1] // 2), Image.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=70, optimize=True)
+    return buf.getvalue(), "image/jpeg"
+
+
 def vision_recognize(client: Anthropic, image_paths: list[Path]) -> str:
     """이미지들을 Claude Vision 으로 읽어 LaTeX 섞인 평문 반환."""
     outputs: list[str] = []
     for idx, path in enumerate(image_paths, 1):
-        with path.open("rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
+        img_bytes, mime = prepare_image_for_vision(path)
+        img_b64 = base64.b64encode(img_bytes).decode()
         resp = client.messages.create(
             model=VISION_MODEL,
             max_tokens=MAX_TOKENS,
@@ -313,7 +364,7 @@ def vision_recognize(client: Anthropic, image_paths: list[Path]) -> str:
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": _mime_for(path),
+                                "media_type": mime,
                                 "data": img_b64,
                             },
                         },
@@ -443,7 +494,7 @@ def pdf_to_images(pdf_path: Path, workdir: Path, dpi: int = 200) -> list[Path]:
     return paths
 
 
-def collect_input_images(uploaded, workdir: Path) -> list[Path]:
+def collect_input_images(uploaded, workdir: Path, dpi: int = 150) -> list[Path]:
     """업로드된 파일(이미지 혹은 PDF) → 이미지 경로 리스트."""
     image_paths: list[Path] = []
     for up in uploaded:
@@ -454,8 +505,8 @@ def collect_input_images(uploaded, workdir: Path) -> list[Path]:
         if suffix in IMAGE_EXTS:
             image_paths.append(saved)
         elif suffix in PDF_EXTS:
-            st.write(f"📄 PDF 렌더링: `{up.name}`")
-            image_paths.extend(pdf_to_images(saved, workdir))
+            st.write(f"📄 PDF 렌더링: `{up.name}` (DPI={dpi})")
+            image_paths.extend(pdf_to_images(saved, workdir, dpi=dpi))
         else:
             st.warning(f"지원하지 않는 형식 무시: {up.name}")
     return image_paths
@@ -487,7 +538,8 @@ def main() -> None:
             "API 키는 환경변수 `ANTHROPIC_API_KEY` 또는\n"
             "Streamlit Secrets 에 설정하세요."
         )
-        dpi = st.slider("PDF 렌더링 DPI", min_value=100, max_value=300, value=200, step=10)
+        dpi = st.slider("PDF 렌더링 DPI", min_value=100, max_value=250, value=150, step=10,
+                        help="높을수록 인식 정확도↑ / 요청 크기↑. 전송 전 자동 리사이즈되지만 낮은 DPI가 더 빠릅니다.")
         show_raw = st.checkbox("Vision 인식 원문 보기", value=False)
         show_json = st.checkbox("구조화 JSON 보기", value=False)
 
@@ -525,7 +577,7 @@ def main() -> None:
 
         # 2) 입력 → 이미지
         with st.status("입력 파일 처리 중…", expanded=True) as status:
-            image_paths = collect_input_images(uploaded, workdir)
+            image_paths = collect_input_images(uploaded, workdir, dpi=dpi)
             if not image_paths:
                 status.update(label="처리할 이미지가 없습니다.", state="error")
                 return
