@@ -35,6 +35,25 @@ sys.path.insert(0, str(HERE))
 import pdf_to_hwpx  # noqa: E402
 
 # ────────────────────────────────────────────────────────────
+# pdf_to_hwpx.latex_to_hwpeq 출력 보정 (monkey-patch)
+# 스킬이 \mathrm{X} 를 "X" (따옴표) 로 변환하는데, 한컴 수식편집기에서
+# 로만체로 렌더되지 않을 수 있음. 출력의 "..." 를 rm{...} 로 치환.
+# Streamlit 재실행에도 재귀되지 않도록 원본은 모듈 속성으로 저장.
+# ────────────────────────────────────────────────────────────
+if not hasattr(pdf_to_hwpx, "_original_latex_to_hwpeq"):
+    pdf_to_hwpx._original_latex_to_hwpeq = pdf_to_hwpx.latex_to_hwpeq
+
+
+def _patched_latex_to_hwpeq(latex: str) -> str:
+    out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
+    # "X" → rm{X}  (따옴표는 mathrm 변환에서만 나오는 것으로 가정)
+    out = re.sub(r'"([^"]+)"', r"rm{\1}", out)
+    return out
+
+
+pdf_to_hwpx.latex_to_hwpeq = _patched_latex_to_hwpeq
+
+# ────────────────────────────────────────────────────────────
 # 상수 / 설정
 # ────────────────────────────────────────────────────────────
 
