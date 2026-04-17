@@ -1,0 +1,6 @@
+streamlit>=1.32
+anthropic>=0.39
+pdf2image>=1.17
+Pillow>=10.0
+numpy>=1.26
+lxml>=5.0
