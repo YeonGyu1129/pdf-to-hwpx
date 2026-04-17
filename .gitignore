@@ -6,3 +6,9 @@ venv/
 .streamlit/secrets.toml
 *.hwpx
 !template.hwpx
+
+# 맥 시스템 파일
+.DS_Store
+
+# Claude Code 로컬 설정
+.claude/

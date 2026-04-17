@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls \"/Users/yeon-gyukim/클로드 코드 작업/pdf를 hwpx로 변환/\"*.hwpx)",
-      "Bash(chmod +x \"/Users/yeon-gyukim/클로드 코드 작업/pdf를 hwpx로 변환/run.command\")"
-    ]
-  }
-}
