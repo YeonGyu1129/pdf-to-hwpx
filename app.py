@@ -40,24 +40,75 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTS = {".pdf"}
 DEFAULT_TEMPLATE = HERE / "template.hwpx"
 
-VISION_PROMPT = """이 이미지에 있는 수학 문제를 정확히 인식하세요.
+VISION_PROMPT = r"""이 이미지에 있는 수학 문제를 정확히 인식하세요.
 
-요구사항:
+## 기본 규칙
 - 문제 번호(예: 1., 2., 23.)를 그대로 유지
 - 본문 텍스트는 한국어 그대로
 - 수식은 LaTeX 인라인 형식(`$...$`)으로 표기
-- 박스로 묶인 보기(ㄱ/ㄴ/ㄷ) 또는 조건(㈎㈏㈐)은 `[박스시작]` / `[박스끝]`으로 감쌉니다
-- 그래프·도형이 있는 위치에는 `[그림: 간단한 설명]`이라고 표시
-- 페이지 머리글/바닥글/페이지 번호는 생략"""
+- 페이지 머리글/바닥글/페이지 번호는 생략
+
+## ⭐ 수식 인식 — 매우 중요
+수학적 의미를 가진 **모든** 기호·문자·숫자는 반드시 `$...$` 로 감싸세요.
+절대 일반 텍스트로 두지 마세요.
+
+포함 대상:
+- 변수: `$x$, $y$, $a$, $n$, $k$` — 단 한 글자라도 반드시 수식
+- 함수: `$f(x)$, $g(t)$, $f'(a)$, $f^{-1}(x)$`
+- 수열·집합 원소: `$a_n$, $S_n$, $a_1, a_2, \ldots, a_n$`
+- 숫자(수학적 의미): `$105$, $2021$, $\frac{1}{2}$`
+- 연산·기호: `$+$, $-$, $\times$, $\div$, $\leq$, $\geq$`
+- 구간·부등식: `$0 < x < 1$, $[0, 1]$`
+
+예시:
+- ❌ "x에 대한 이차함수 f(x)가 있다" (잘못됨)
+- ✅ "$x$에 대한 이차함수 $f(x)$가 있다"
+- ❌ "점 A와 점 B 사이 거리" (잘못됨)
+- ✅ "점 $\mathrm{A}$와 점 $\mathrm{B}$ 사이 거리"
+
+## ⭐ 기하 기호 로만체 — 매우 중요
+점·선분·각·삼각형을 나타내는 **알파벳 대문자**는 반드시 `\mathrm{}` 로 감싸서 로만체로.
+
+| 대상 | LaTeX 표기 |
+|------|-----------|
+| 점 A | `$\mathrm{A}$` |
+| 선분 AB | `$\overline{\mathrm{AB}}$` |
+| 직선 AB | `$\overleftrightarrow{\mathrm{AB}}$` |
+| 반직선 AB | `$\overrightarrow{\mathrm{AB}}$` |
+| 각 ABC | `$\angle \mathrm{ABC}$` |
+| 삼각형 ABC | `$\triangle \mathrm{ABC}$` |
+| 호 AB | `$\overset{\frown}{\mathrm{AB}}$` |
+
+- 여러 글자로 된 기하 라벨은 **모두** `\mathrm{}` 안에 묶어서 한 번에 씀 (예: `\mathrm{AB}` — 따로 쓰지 말 것)
+- 변수 `$a, b, x$` 등은 `\mathrm` 붙이지 말 것 (이탤릭 유지)
+
+## ⭐ 객관식 보기 — 매우 중요
+①②③④⑤ 로 시작하는 객관식 보기는 본문 뒤에 **반드시 줄바꿈**해서 각각 **새 줄**에 쓰세요.
+
+예시:
+```
+문제 본문 마지막 문장입니다. $f(5)$의 값은?
+① $-2$
+② $-1$
+③ $0$
+④ $1$
+⑤ $2$
+```
+
+모든 ①②③④⑤ 앞에는 반드시 줄바꿈(`\n`) 이 들어가야 합니다. 본문 뒤에 바로 붙이지 마세요.
+
+## 박스 / 그림
+- 박스로 묶인 보기(ㄱ/ㄴ/ㄷ) 또는 조건(㈎㈏㈐)은 `[박스시작]` / `[박스끝]` 으로 감쌉니다
+- 그래프·도형이 있는 위치에는 `[그림: 간단한 설명]` 이라고 표시"""
 
 STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하세요.
 
 ## 출력 규칙
 - 반드시 **JSON만** 반환 (마크다운 코드펜스 금지)
 - 최상위 키는 `"problems"`, 값은 배열
-- 각 항목은 아래 세 종류 중 하나
+- 각 항목은 아래 네 종류 중 하나
 
-### 1) 일반 문단
+### 1) 일반 문단 (문제 본문)
 ```
 {
   "number": "1",
@@ -70,7 +121,22 @@ STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하�
 }
 ```
 
-### 2) 박스 (보기/조건)
+### 2) 객관식 보기 줄 (①②③④⑤)
+⭐ **각 보기는 반드시 별도 problem 엔트리로 분리** (절대 본문 segments 뒤에 붙이지 말 것).
+`main: false` 로 표시하며, 엔트리 하나가 곧 한 줄이 됩니다.
+
+```
+{"number": "1-①", "main": false, "segments": [
+    {"type": "text", "content": "① "},
+    {"type": "formula", "content": "-2"}
+]},
+{"number": "1-②", "main": false, "segments": [
+    {"type": "text", "content": "② "},
+    {"type": "formula", "content": "-1"}
+]}
+```
+
+### 3) 박스 (보기/조건)
 - `box_type`: "bogi" (ㄱ/ㄴ/ㄷ 등 보기) 또는 "condition" (㈎㈏㈐ 등 조건)
 - `segments`는 **2차원 배열**(줄별 세그먼트)
 ```
@@ -85,16 +151,123 @@ STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하�
 }
 ```
 
-### 3) 그림 자리표시자
+### 4) 그림 자리표시자
 `[그림: …]` 표기가 있는 위치에 삽입:
 ```
 {"type": "image_placeholder", "description": "…원문 그림 설명…"}
 ```
 
-## 세그먼트 분리 기준
-- 함수식(`f(x)`), 변수(`x, a, n`), 분수, 지수, 루트 등 수학 기호를 포함하면 `formula`
-- 조사·명사·동사 등 순수 한국어는 `text`
-- `formula`의 `content`는 LaTeX 본문 (달러 기호 제외)
+## ⭐ 세그먼트 분리 기준 — 엄격 준수
+수학적 의미를 가진 기호·문자·숫자는 **반드시** `formula` 세그먼트로 분리하세요.
+단 한 글자라도 수학적으로 쓰인 것이면 formula. 절대 text 세그먼트에 넣지 말 것.
+
+### formula 로 처리할 것
+- 변수 한 글자: `x`, `y`, `a`, `n`, `k` → 각각 `{"type":"formula","content":"x"}`
+- 함수: `f(x)`, `g(t)`, `f'(a)`, `f^{-1}(x)`
+- 수열 원소: `a_n`, `S_{10}`, `a_1, a_2, \ldots, a_n`
+- 수학 의미의 숫자: `105`, `2021`, `\frac{1}{2}`
+- 기하 기호 (반드시 `\mathrm{}` 로 로만체): `\mathrm{A}`, `\overline{\mathrm{AB}}`, `\triangle \mathrm{ABC}`, `\angle \mathrm{ABC}`
+- 부등식·구간: `0 < x < 1`, `[a, b]`
+
+### text 로 처리할 것
+- 조사·명사·동사 등 **순수 한국어 연속체**: `"에 대하여 "`, `"의 값을 구하시오."`
+- 문맥상 수학 기호가 아닌 구두점·괄호: `", "`, `"이고,"`, `"(단, "`
+
+### ⭐ 기하 로만체 — 필수
+점·선분·각·삼각형을 나타내는 알파벳 대문자는 반드시 `\mathrm{}` 로 감싸서 로만체 처리.
+
+| 대상 | LaTeX 표기 |
+|------|-----------|
+| 점 A | `\mathrm{A}` |
+| 선분 AB | `\overline{\mathrm{AB}}` |
+| 직선 AB | `\overleftrightarrow{\mathrm{AB}}` |
+| 반직선 AB | `\overrightarrow{\mathrm{AB}}` |
+| 각 ABC | `\angle \mathrm{ABC}` |
+| 삼각형 ABC | `\triangle \mathrm{ABC}` |
+
+여러 글자 라벨은 **한 번에** `\mathrm{AB}` 처럼 묶어 쓸 것 (따로따로 쓰지 말 것).
+변수(`a, b, x` 등)에는 `\mathrm` 붙이지 말 것.
+
+### 변환 예시 1 — 본문 세그먼트 분리
+입력: "다항식 f(x)가 (ax+b)(x+c)^2로 인수분해될 때, f(7)의 값을 구하시오."
+
+❌ 잘못된 예:
+```
+[{"type":"text","content":"다항식 f(x)가 (ax+b)(x+c)^2로 인수분해될 때, f(7)의 값을 구하시오."}]
+```
+
+✅ 올바른 예:
+```
+[
+  {"type":"text","content":"다항식 "},
+  {"type":"formula","content":"f(x)"},
+  {"type":"text","content":"가 "},
+  {"type":"formula","content":"(ax+b)(x+c)^2"},
+  {"type":"text","content":"로 인수분해될 때, "},
+  {"type":"formula","content":"f(7)"},
+  {"type":"text","content":"의 값을 구하시오."}
+]
+```
+
+### 변환 예시 2 — 기하 로만체
+입력: "점 A와 점 B를 잇는 선분 AB의 길이는 5이다"
+
+✅ 올바른 예:
+```
+[
+  {"type":"text","content":"점 "},
+  {"type":"formula","content":"\\mathrm{A}"},
+  {"type":"text","content":"와 점 "},
+  {"type":"formula","content":"\\mathrm{B}"},
+  {"type":"text","content":"를 잇는 선분 "},
+  {"type":"formula","content":"\\overline{\\mathrm{AB}}"},
+  {"type":"text","content":"의 길이는 "},
+  {"type":"formula","content":"5"},
+  {"type":"text","content":"이다"}
+]
+```
+
+### 변환 예시 3 — 객관식 보기 분리
+입력:
+```
+다음 중 옳은 것은? ① -2 ② -1 ③ 0 ④ 1 ⑤ 2
+```
+
+❌ 잘못된 예 (한 엔트리에 몰아넣기):
+```
+{"number":"1","main":true,"segments":[
+    {"type":"text","content":"다음 중 옳은 것은? ① "},{"type":"formula","content":"-2"},
+    {"type":"text","content":" ② "},{"type":"formula","content":"-1"}, ...
+]}
+```
+
+✅ 올바른 예 (본문 + 보기 각각 별도 엔트리):
+```
+{"number":"1","main":true,"segments":[
+    {"type":"text","content":"다음 중 옳은 것은?"}
+]},
+{"number":"1-①","main":false,"segments":[
+    {"type":"text","content":"① "},{"type":"formula","content":"-2"}
+]},
+{"number":"1-②","main":false,"segments":[
+    {"type":"text","content":"② "},{"type":"formula","content":"-1"}
+]},
+{"number":"1-③","main":false,"segments":[
+    {"type":"text","content":"③ "},{"type":"formula","content":"0"}
+]},
+{"number":"1-④","main":false,"segments":[
+    {"type":"text","content":"④ "},{"type":"formula","content":"1"}
+]},
+{"number":"1-⑤","main":false,"segments":[
+    {"type":"text","content":"⑤ "},{"type":"formula","content":"2"}
+]}
+```
+
+## formula 의 content 규칙
+- LaTeX 본문만 (달러 기호 `$` 제외)
+- 분수 `\frac{}{}`, 루트 `\sqrt{}`, 첨자 `_{}` / `^{}` 사용
+- 기하 라벨은 `\mathrm{}` 로 감싸기
+- JSON 문자열 안에서 백슬래시는 `\\` 로 이스케이프 (예: `"\\mathrm{A}"`, `"\\overline{\\mathrm{AB}}"`)
 """
 
 # ────────────────────────────────────────────────────────────
