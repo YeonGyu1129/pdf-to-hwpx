@@ -46,20 +46,11 @@ if not hasattr(pdf_to_hwpx, "_original_latex_to_hwpeq"):
 
 def _paren_boundary(out: str) -> str:
     """
-    한글 수식편집기가 `{` 또는 `}` 또는 `)` 바로 뒤에 오는 `(` 를 삼키는 버그를
-    회피. 소괄호를 중괄호 그룹 `{( ... )}` 으로 감싼다. 이렇게 하면 편집기가
-    '그룹 안의 문자' 로 취급해 `(` 를 제대로 렌더링함.
-
-    단순 패턴만 — 중첩 괄호는 건드리지 않음.
+    한글 수식편집기가 'left (' (공백 있음) 패턴에서 소괄호를 삼키는 버그를 회피.
+    공백을 제거하여 'left(' / 'right)' 형태로 만듦.
     """
-    # 1) `}(` 또는 `{(` 또는 `)(` 뒤의 `(...)` 를 찾아 `{(...)}` 로 감싸기
-    #    짝 찾기를 위해 중첩 없는 경우만 매칭
-    def _wrap(m: re.Match) -> str:
-        prefix = m.group(1)
-        inner = m.group(2)
-        return f"{prefix} {{({inner})}}"
-
-    out = re.sub(r"([}{)])\s*\(([^()]*)\)", _wrap, out)
+    out = re.sub(r"\bleft\s+\(", "left(", out)
+    out = re.sub(r"\bright\s+\)", "right)", out)
     return out
 
 
@@ -626,10 +617,8 @@ def _auto_mathrm(latex: str) -> str:
     #      공백을 삽입해 버그 회피: \int _{0}^{\frac{\pi}{4}}
     s = re.sub(r"(\\(?:int|sum|prod|oint|iint|iiint|bigcup|bigcap))(?=[_^])", r"\1 ", s)
 
-    # 0-d) \left( / \right) 는 hwpEQ 변환기에서 left ( / right ) 로 바뀌는데,
-    #      이 경우 한글 수식편집기가 '{ left (' 패턴에서 소괄호를 삼키는 버그가 있음.
-    #      회피: \left(, \right) 를 제거하고 그냥 ( , ) 만 남김.
-    s = s.replace(r"\left(", "(").replace(r"\right)", ")")
+    # 0-d) \left( / \right) 는 그대로 유지 — 아래 단계에서 left( / right) 로
+    #      변환되도록 (공백 없이) 만들어야 한글 수식편집기가 정상 렌더.
 
     # 0-b) 그리스문자 + 아래첨자 버그 회피
     #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
