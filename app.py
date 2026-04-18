@@ -590,6 +590,17 @@ def _auto_mathrm(latex: str) -> str:
     s = s.replace(r"\middle|", "|")  # \left...\middle|...\right 에서 쓰임
     s = s.replace(r"\vert", "|")     # 수직 막대
     s = s.replace(r"\|", "||")       # 평행 (이중 막대)
+    s = s.replace(r"\%", "%")        # \% → % (한글에서 \ 가 그대로 렌더됨)
+    s = s.replace(r"\$", "$")
+    s = s.replace(r"\&", "&")
+    s = s.replace(r"\#", "#")
+    s = s.replace(r"\_", "_")
+
+    # 0-c) \int / \sum / \prod / \oint 다음에 _{...} 가 바로 붙고
+    #      지수에 \frac 이 들어가면 skill 변환기가 연산자를 삼킴.
+    #      예: \int_{0}^{\frac{\pi}{4}} → '_{0}^{...}' (INT 사라짐)
+    #      공백을 삽입해 버그 회피: \int _{0}^{\frac{\pi}{4}}
+    s = re.sub(r"(\\(?:int|sum|prod|oint|iint|iiint|bigcup|bigcap))(?=[_^])", r"\1 ", s)
 
     # 0-b) 그리스문자 + 아래첨자 버그 회피
     #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
