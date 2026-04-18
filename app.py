@@ -131,13 +131,19 @@ pdf_to_hwpx.latex_to_hwpeq = _patched_latex_to_hwpeq
 
 VISION_MODEL = "claude-opus-4-5"
 EXTRACT_MODEL = "claude-opus-4-5"
-MAX_TOKENS = 8000
+MAX_TOKENS = 16000  # 구조화 JSON 이 긴 페이지에서 잘리지 않도록 여유 확보
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTS = {".pdf"}
 DEFAULT_TEMPLATE = HERE / "template.hwpx"
 
 VISION_PROMPT = r"""이 이미지에 있는 수학 문제를 정확히 인식하세요.
+
+## ⚠️ 최우선 원칙 — 누락 금지
+페이지 안에 **보이는 모든 문제**를 빠짐없이 옮겨 적으세요.
+- 번호가 있는 모든 문제를 순서대로 포함 (예: 12, 13, 14 연속되면 셋 다)
+- 짧은 문제라도 생략하지 말 것
+- 도형/그래프 때문에 잘려 보이는 부분까지 텍스트는 최대한 복구
 
 ## 기본 규칙
 - 문제 번호(예: 1., 2., 23.)를 그대로 유지
@@ -231,6 +237,12 @@ VISION_PROMPT = r"""이 이미지에 있는 수학 문제를 정확히 인식하
 - 그래프·도형이 있는 위치에는 `[그림: 간단한 설명]` 이라고 표시"""
 
 STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하세요.
+
+## ⚠️ 최우선 원칙 — 누락 금지
+입력에 있는 **모든 문제를 빠짐없이** JSON 에 포함해야 합니다.
+- 문제 번호가 1, 2, ... 12, 13, 14 ... 처럼 이어질 때 **중간 번호를 절대 건너뛰지 마세요**
+- 요약·축약 금지. 입력 원문의 **모든 문장을 완전히** 반영
+- 긴 문제라도 생략 없이 전체 내용을 segments 로 분해
 
 ## 출력 규칙
 - 반드시 **JSON만** 반환 (마크다운 코드펜스 금지)
@@ -533,11 +545,24 @@ def _parse_json_loose(text: str) -> dict[str, Any]:
         raise
 
 
-def structure_single(client: Anthropic, raw_text: str) -> list[dict[str, Any]]:
-    """페이지 하나의 평문을 JSON 으로 구조화."""
+def _is_response_truncated(resp) -> bool:
+    """Claude 응답이 max_tokens 에 걸려 잘렸는지 판단."""
+    reason = getattr(resp, "stop_reason", None)
+    return reason == "max_tokens"
+
+
+def structure_single(
+    client: Anthropic,
+    raw_text: str,
+    max_tokens: int = MAX_TOKENS,
+) -> tuple[list[dict[str, Any]], bool]:
+    """
+    페이지 하나의 평문을 JSON 으로 구조화.
+    반환: (problems, truncated) — truncated 는 응답이 잘렸는지 여부.
+    """
     resp = client.messages.create(
         model=EXTRACT_MODEL,
-        max_tokens=MAX_TOKENS,
+        max_tokens=max_tokens,
         messages=[
             {
                 "role": "user",
@@ -546,12 +571,36 @@ def structure_single(client: Anthropic, raw_text: str) -> list[dict[str, Any]]:
         ],
     )
     text = resp.content[0].text
+    truncated = _is_response_truncated(resp)
     data = _parse_json_loose(text)
-    return data.get("problems", [])
+    return data.get("problems", []), truncated
+
+
+def _split_page_text(raw_text: str) -> list[str]:
+    """페이지 텍스트를 문제 번호 기준으로 두 덩어리로 쪼갬 (잘림 대응용)."""
+    # 줄 시작에 있는 "1.", "2.", "12." 같은 패턴으로 분리
+    lines = raw_text.split("\n")
+    problem_starts = []
+    pat = re.compile(r"^\s*(\d+|서답형\d+)\s*[.\)]")
+    for i, line in enumerate(lines):
+        if pat.match(line):
+            problem_starts.append(i)
+
+    if len(problem_starts) < 2:
+        # 분리할 수 없으면 절반으로 나눔
+        mid = len(lines) // 2
+        return ["\n".join(lines[:mid]), "\n".join(lines[mid:])]
+
+    # 중간 지점을 기준으로 둘로 나눔
+    mid_idx = problem_starts[len(problem_starts) // 2]
+    return ["\n".join(lines[:mid_idx]), "\n".join(lines[mid_idx:])]
 
 
 def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str, Any]]:
-    """페이지별로 따로 구조화한 뒤 하나의 problems 리스트로 병합."""
+    """
+    페이지별로 따로 구조화한 뒤 하나의 problems 리스트로 병합.
+    응답이 잘리면(`max_tokens`) 페이지를 반으로 쪼개서 재시도.
+    """
     all_problems: list[dict[str, Any]] = []
     progress = st.progress(0.0, text="문제 구조화 준비 중…")
     total = len(raw_texts)
@@ -560,11 +609,30 @@ def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str
         if not page_text.strip():
             continue
         try:
-            page_problems = structure_single(client, page_text)
+            page_problems, truncated = structure_single(client, page_text)
         except json.JSONDecodeError as e:
-            st.warning(f"페이지 {idx} 구조화 실패: {e}. 이 페이지는 건너뜁니다.")
-            continue
+            st.warning(f"페이지 {idx} 구조화 실패: {e}. 재시도 중…")
+            truncated = True
+            page_problems = []
+
+        if truncated:
+            st.info(f"페이지 {idx} 응답이 길어 쪼개서 재시도 중… (누락 방지)")
+            # 페이지를 둘로 나눠서 각각 구조화
+            recovered: list[dict[str, Any]] = []
+            for chunk in _split_page_text(page_text):
+                if not chunk.strip():
+                    continue
+                try:
+                    chunk_probs, _ = structure_single(client, chunk)
+                    recovered.extend(chunk_probs)
+                except json.JSONDecodeError:
+                    continue
+            # 재시도 결과가 더 많으면 채택, 아니면 원래 결과 유지
+            if len(recovered) > len(page_problems):
+                page_problems = recovered
+
         all_problems.extend(page_problems)
+
     progress.progress(1.0, text="문제 구조화 완료")
     cleaned = sanitize_problems(all_problems)
     return _insert_problem_spacing(cleaned)
