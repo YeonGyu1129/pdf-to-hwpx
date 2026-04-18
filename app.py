@@ -76,10 +76,11 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     out = re.sub(r"\x00(\d+)\x00", lambda m: _prot[int(m.group(1))], out)
 
     # 5) 공백 개선 — 보기 답답함 해결
-    # 5-a) 쉼표 뒤 공백/없음 → ~ (수식과 수식 사이 콤마 띄어쓰기)
-    #      예: "a, b" → "a,~b",  "x,y" → "x,~y"
-    #      이미 ~ 가 있으면 건드리지 않음
-    out = re.sub(r",\s*(?!~)", ",~", out)
+    # 5-a) 쉼표 뒤 ~ 공백 (순서쌍/수열 등 시각적 간격)
+    #      예: "x,y" → "x,~ y",  "a, b" → "a,~ b"
+    #      한글 수식편집기가 "숫자,~command" 패턴에서 이상하게 파싱하는 현상 방지를 위해
+    #      `~` 뒤에 공백 하나를 더 삽입.
+    out = re.sub(r",\s*(?!~)", ",~ ", out)
     # 5-b) 집합 구분자 | 좌우 공백 추가 ({A|B} → {A ~|~ B})
     #      절댓값 left |...right | 은 제외
     out = re.sub(r"(?<!left)(?<!right) \| ", " ~|~ ", out)
@@ -583,6 +584,12 @@ def _auto_mathrm(latex: str) -> str:
     #    스타일 힌트는 hwpEQ 에서 중요하지 않으므로 제거.
     for _cmd in (r"\displaystyle", r"\textstyle", r"\scriptstyle", r"\scriptscriptstyle"):
         s = s.replace(_cmd, "")
+
+    # 0-a) 스킬이 처리 못 하는 LaTeX 명령을 hwpEQ 친화 기호로 대체
+    s = s.replace(r"\mid", "|")      # 집합 구분자 → |
+    s = s.replace(r"\middle|", "|")  # \left...\middle|...\right 에서 쓰임
+    s = s.replace(r"\vert", "|")     # 수직 막대
+    s = s.replace(r"\|", "||")       # 평행 (이중 막대)
 
     # 0-b) 그리스문자 + 아래첨자 버그 회피
     #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
