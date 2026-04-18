@@ -76,16 +76,18 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     out = re.sub(r"\x00(\d+)\x00", lambda m: _prot[int(m.group(1))], out)
 
     # 5) 공백 개선 — 보기 답답함 해결
-    # 5-a) 쉼표 뒤 ~ 추가 (순서쌍 (x,y) → (x,~y))
-    #      이미 ~ 나 공백이 있는 경우는 건드리지 않음
-    out = re.sub(r",(?![~\s])", ",~", out)
+    # 5-a) 쉼표 뒤 공백/없음 → ~ (수식과 수식 사이 콤마 띄어쓰기)
+    #      예: "a, b" → "a,~b",  "x,y" → "x,~y"
+    #      이미 ~ 가 있으면 건드리지 않음
+    out = re.sub(r",\s*(?!~)", ",~", out)
     # 5-b) 집합 구분자 | 좌우 공백 추가 ({A|B} → {A ~|~ B})
     #      절댓값 left |...right | 은 제외
     out = re.sub(r"(?<!left)(?<!right) \| ", " ~|~ ", out)
     # 5-c) 좌/우 극한 ^-, ^+ → -, + (위첨자 제거)
-    #      예: rarrow 2^- → rarrow 2-
-    #      뒤에 문자/숫자/중괄호가 붙지 않은 경우만 (x^{-1} 등은 건드리지 않음)
+    #      예: 2^- → 2-,  0^{+} → 0+
+    #      x^{-1}, x^-1 등 뒤에 숫자/문자가 붙으면 건드리지 않음
     out = re.sub(r"\^([+\-])(?![A-Za-z0-9{])", r"\1", out)
+    out = re.sub(r"\^\{([+\-])\}", r"\1", out)
 
     # 6) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
@@ -731,9 +733,12 @@ def _split_korean_in_segments(segs: list[dict[str, Any]]) -> list[dict[str, Any]
     return result
 
 
+PROBLEM_GAP_LINES = 2  # 다른 문제 사이의 빈 줄 개수
+
+
 def _insert_problem_spacing(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    다른 문제 번호 사이에 빈 문단 5줄 삽입.
+    다른 문제 번호 사이에 빈 문단을 PROBLEM_GAP_LINES 만큼 삽입.
     "1", "1-①", "1-box" 등은 같은 문제로 간주 (앞 숫자만 비교).
     """
     if not problems:
@@ -749,7 +754,7 @@ def _insert_problem_spacing(problems: list[dict[str, Any]]) -> list[dict[str, An
     for prob in problems:
         cur_base = _base(prob)
         if last_base and cur_base and cur_base != last_base:
-            for _ in range(5):
+            for _ in range(PROBLEM_GAP_LINES):
                 result.append(
                     {
                         "number": "",
