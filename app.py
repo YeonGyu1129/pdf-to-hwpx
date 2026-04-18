@@ -569,6 +569,16 @@ def _auto_mathrm(latex: str) -> str:
     for _cmd in (r"\displaystyle", r"\textstyle", r"\scriptstyle", r"\scriptscriptstyle"):
         s = s.replace(_cmd, "")
 
+    # 0-b) 그리스문자 + 아래첨자 버그 회피
+    #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
+    _GREEK = (
+        "alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|"
+        "iota|kappa|lambda|mu|nu|xi|pi|varpi|rho|varrho|sigma|varsigma|"
+        "tau|upsilon|phi|varphi|chi|psi|omega|"
+        "Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega"
+    )
+    s = re.sub(rf"(\\(?:{_GREEK}))_", r"\1 _", s)
+
     # 1) 큰 합/교집합 교정
     s = s.replace(r"\bigcup", r"\cup")
     s = s.replace(r"\bigcap", r"\cap")
