@@ -75,7 +75,15 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     out = re.sub(r"(?<![a-zA-Z])([a-z])(?![a-zA-Z])", r"it{\1}", out)
     out = re.sub(r"\x00(\d+)\x00", lambda m: _prot[int(m.group(1))], out)
 
-    # 5) 여분의 공백 정리
+    # 5) 공백 개선 — 보기 답답함 해결
+    # 5-a) 쉼표 뒤 ~ 추가 (순서쌍 (x,y) → (x,~y))
+    #      이미 ~ 나 공백이 있는 경우는 건드리지 않음
+    out = re.sub(r",(?![~\s])", ",~", out)
+    # 5-b) 집합 구분자 | 좌우 공백 추가 ({A|B} → {A ~|~ B})
+    #      절댓값 left |...right | 은 제외
+    out = re.sub(r"(?<!left)(?<!right) \| ", " ~|~ ", out)
+
+    # 6) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
     return out
 
