@@ -82,6 +82,10 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     # 5-b) 집합 구분자 | 좌우 공백 추가 ({A|B} → {A ~|~ B})
     #      절댓값 left |...right | 은 제외
     out = re.sub(r"(?<!left)(?<!right) \| ", " ~|~ ", out)
+    # 5-c) 좌/우 극한 ^-, ^+ → -, + (위첨자 제거)
+    #      예: rarrow 2^- → rarrow 2-
+    #      뒤에 문자/숫자/중괄호가 붙지 않은 경우만 (x^{-1} 등은 건드리지 않음)
+    out = re.sub(r"\^([+\-])(?![A-Za-z0-9{])", r"\1", out)
 
     # 6) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
