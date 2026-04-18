@@ -129,12 +129,12 @@ pdf_to_hwpx.latex_to_hwpeq = _patched_latex_to_hwpeq
 # 상수 / 설정
 # ────────────────────────────────────────────────────────────
 
-VISION_MODEL = "claude-opus-4-5"
-EXTRACT_MODEL = "claude-opus-4-5"
+VISION_MODEL = "claude-sonnet-4-5"
+EXTRACT_MODEL = "claude-sonnet-4-5"
 # 모델별 max_tokens 한도에 맞춰 설정. 한도를 넘으면 BadRequestError.
-VISION_MAX_TOKENS = 8000
+VISION_MAX_TOKENS = 4000
 STRUCT_MAX_TOKENS = 8000
-MAX_TOKENS = 8000  # 하위 호환용 (기존 참조)
+MAX_TOKENS = 4000  # 하위 호환용 (기존 참조)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTS = {".pdf"}
