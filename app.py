@@ -46,17 +46,36 @@ if not hasattr(pdf_to_hwpx, "_original_latex_to_hwpeq"):
 
 def _patched_latex_to_hwpeq(latex: str) -> str:
     out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
-    # "X" → rm{X}  (따옴표는 mathrm 변환에서만 나오는 것으로 가정)
+
+    # 1) "X" → rm{X}  (따옴표는 mathrm 변환에서만 나오는 것으로 가정)
     out = re.sub(r'"([^"]+)"', r"rm{\1}", out)
-    # ^{prime} → ' prime '  (위첨자 대신 한 칸 띄고 prime 키워드, 뒤에도 공백)
-    #   예: rm{A}^{prime}rm{B} → rm{A} prime rm{B}
-    #       ^{primeprime}      → ' prime prime '
+
+    # 2) UNION/INTER → cup/cap  (빅 합집합/교집합 → 일반 합집합/교집합)
+    out = re.sub(r"\bUNION\b", "cup", out)
+    out = re.sub(r"\bINTER\b", "cap", out)
+
+    # 3) ^{prime...} → ' prime ... '  (위첨자 대신 키워드, 양쪽 공백)
     def _prime_sub(m: re.Match) -> str:
         count = len(m.group(1)) // 5  # "prime" = 5 글자
         return " " + " ".join(["prime"] * count) + " "
 
     out = re.sub(r"\^\{((?:prime)+)\}", _prime_sub, out)
-    # 여분의 공백 정리 (뒤에 공백이 이미 있거나 문자열 끝인 경우)
+
+    # 4) 단일 소문자 변수를 it{...} 로 감싸기 (hwpEQ 이탤릭 강제)
+    #    - rm{...}, it{...} 안은 건드리지 않음
+    #    - 이미 다른 단어(sin, theta, over, bar 등)의 일부면 건드리지 않음
+    _prot: list[str] = []
+
+    def _save(m: re.Match) -> str:
+        idx = len(_prot)
+        _prot.append(m.group(0))
+        return f"\x00{idx}\x00"
+
+    out = re.sub(r"(?:rm|it)\{[^{}]*\}", _save, out)
+    out = re.sub(r"(?<![a-zA-Z])([a-z])(?![a-zA-Z])", r"it{\1}", out)
+    out = re.sub(r"\x00(\d+)\x00", lambda m: _prot[int(m.group(1))], out)
+
+    # 5) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
     return out
 
