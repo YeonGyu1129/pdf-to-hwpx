@@ -535,7 +535,8 @@ def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str
             continue
         all_problems.extend(page_problems)
     progress.progress(1.0, text="문제 구조화 완료")
-    return sanitize_problems(all_problems)
+    cleaned = sanitize_problems(all_problems)
+    return _insert_problem_spacing(cleaned)
 
 
 def _auto_mathrm(latex: str) -> str:
@@ -678,12 +679,81 @@ def _clean_segment(seg: Any) -> dict[str, Any] | None:
     return {"type": seg_type, "content": content}
 
 
+_HANGUL_RE = re.compile(r"[\uAC00-\uD7A3]+(?:[\s,.!?·\uAC00-\uD7A3]*[\uAC00-\uD7A3])?")
+
+
+def _split_korean_in_segments(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    formula 세그먼트 안에 한글이 섞여 있으면 세그먼트를 분리:
+      formula("y=x이고y=(x-k)^2") → formula("y=x"), text(" 이고 "), formula("y=(x-k)^2")
+    """
+    result: list[dict[str, Any]] = []
+    for s in segs:
+        if (
+            s.get("type") == "formula"
+            and isinstance(s.get("content"), str)
+            and re.search(r"[\uAC00-\uD7A3]", s["content"])
+        ):
+            content = s["content"]
+            last_end = 0
+            for m in _HANGUL_RE.finditer(content):
+                start, end = m.span()
+                if start > last_end:
+                    pre = content[last_end:start].strip()
+                    if pre:
+                        result.append({"type": "formula", "content": pre})
+                korean = m.group(0).strip()
+                if korean:
+                    result.append({"type": "text", "content": " " + korean + " "})
+                last_end = end
+            if last_end < len(content):
+                post = content[last_end:].strip()
+                if post:
+                    result.append({"type": "formula", "content": post})
+        else:
+            result.append(s)
+    return result
+
+
+def _insert_problem_spacing(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    다른 문제 번호 사이에 빈 문단 5줄 삽입.
+    "1", "1-①", "1-box" 등은 같은 문제로 간주 (앞 숫자만 비교).
+    """
+    if not problems:
+        return problems
+
+    def _base(p: dict) -> str:
+        num = str(p.get("number", ""))
+        m = re.match(r"^\s*(\d+)", num)
+        return m.group(1) if m else ""
+
+    result: list[dict[str, Any]] = []
+    last_base: str | None = None
+    for prob in problems:
+        cur_base = _base(prob)
+        if last_base and cur_base and cur_base != last_base:
+            for _ in range(5):
+                result.append(
+                    {
+                        "number": "",
+                        "main": False,
+                        "segments": [{"type": "text", "content": " "}],
+                    }
+                )
+        result.append(prob)
+        if cur_base:
+            last_base = cur_base
+    return result
+
+
 def sanitize_problems(problems: list[Any]) -> list[dict[str, Any]]:
     """
     Claude 가 준 JSON 을 build_hwpx 가 기대하는 모양으로 정리:
       - 모든 segment 는 {"type": "text"|"formula", "content": str} 형태
       - image_placeholder 는 problems 레벨에서만 허용 (segments 안에 섞여 있으면 빼냄)
       - 빈 segment/problem 은 제거
+      - formula 안 한글은 text 로 분리
     """
     cleaned: list[dict[str, Any]] = []
     for prob in problems:
@@ -704,6 +774,7 @@ def sanitize_problems(problems: list[Any]) -> list[dict[str, Any]]:
                 if not isinstance(row, list):
                     continue
                 row_clean = [s for s in (_clean_segment(x) for x in row) if s]
+                row_clean = _split_korean_in_segments(row_clean)
                 if row_clean:
                     new_rows.append(row_clean)
             if new_rows:
@@ -724,6 +795,7 @@ def sanitize_problems(problems: list[Any]) -> list[dict[str, Any]]:
                 c = _clean_segment(x)
                 if c:
                     flat_clean.append(c)
+            flat_clean = _split_korean_in_segments(flat_clean)
             if flat_clean:
                 new_prob = dict(prob)
                 new_prob["segments"] = flat_clean
