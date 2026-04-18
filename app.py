@@ -452,7 +452,13 @@ STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하�
 
 
 def get_client() -> Anthropic:
-    key = os.environ.get("ANTHROPIC_API_KEY") or st.secrets.get("ANTHROPIC_API_KEY", "")
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        # st.secrets 는 로컬에 secrets.toml 이 없으면 예외를 던짐
+        try:
+            key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            key = ""
     if not key:
         st.error(
             "`ANTHROPIC_API_KEY` 환경변수가 없습니다. "
