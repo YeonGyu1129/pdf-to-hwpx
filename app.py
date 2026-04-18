@@ -131,7 +131,10 @@ pdf_to_hwpx.latex_to_hwpeq = _patched_latex_to_hwpeq
 
 VISION_MODEL = "claude-opus-4-5"
 EXTRACT_MODEL = "claude-opus-4-5"
-MAX_TOKENS = 16000  # 구조화 JSON 이 긴 페이지에서 잘리지 않도록 여유 확보
+# 모델별 max_tokens 한도에 맞춰 설정. 한도를 넘으면 BadRequestError.
+VISION_MAX_TOKENS = 8000
+STRUCT_MAX_TOKENS = 8000
+MAX_TOKENS = 8000  # 하위 호환용 (기존 참조)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTS = {".pdf"}
@@ -531,7 +534,7 @@ def vision_recognize(client: Anthropic, image_paths: list[Path]) -> list[str]:
         img_b64 = base64.b64encode(img_bytes).decode()
         resp = client.messages.create(
             model=VISION_MODEL,
-            max_tokens=MAX_TOKENS,
+            max_tokens=VISION_MAX_TOKENS,
             messages=[
                 {
                     "role": "user",
@@ -586,7 +589,7 @@ def _is_response_truncated(resp) -> bool:
 def structure_single(
     client: Anthropic,
     raw_text: str,
-    max_tokens: int = MAX_TOKENS,
+    max_tokens: int = STRUCT_MAX_TOKENS,
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     페이지 하나의 평문을 JSON 으로 구조화.
