@@ -563,6 +563,12 @@ def _auto_mathrm(latex: str) -> str:
     """
     s = latex
 
+    # 0) 스타일 명령 제거
+    #    \displaystyle\lim 처럼 붙여 쓰면 skill 변환기가 \lim 까지 삼키는 버그가 있음.
+    #    스타일 힌트는 hwpEQ 에서 중요하지 않으므로 제거.
+    for _cmd in (r"\displaystyle", r"\textstyle", r"\scriptstyle", r"\scriptscriptstyle"):
+        s = s.replace(_cmd, "")
+
     # 1) 큰 합/교집합 교정
     s = s.replace(r"\bigcup", r"\cup")
     s = s.replace(r"\bigcap", r"\cap")
