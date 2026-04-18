@@ -602,6 +602,12 @@ def _auto_mathrm(latex: str) -> str:
     #      공백을 삽입해 버그 회피: \int _{0}^{\frac{\pi}{4}}
     s = re.sub(r"(\\(?:int|sum|prod|oint|iint|iiint|bigcup|bigcap))(?=[_^])", r"\1 ", s)
 
+    # 0-d) \left( ... \right) → ( ... )  (소괄호만 단순화)
+    #      한글 수식편집기가 중첩 left/right 괄호 중 안쪽 left (...right ) 를
+    #      삼키는 현상이 있어 소괄호는 평범한 괄호로 바꿔 회피.
+    #      대괄호 [], 중괄호 {}, 절댓값 |...|, 꺾쇠 <...> 는 크기 조정이 필요해 유지.
+    s = s.replace(r"\left(", "(").replace(r"\right)", ")")
+
     # 0-b) 그리스문자 + 아래첨자 버그 회피
     #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
     _GREEK = (
