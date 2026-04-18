@@ -89,6 +89,19 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     out = re.sub(r"\^([+\-])(?![A-Za-z0-9{])", r"\1", out)
     out = re.sub(r"\^\{([+\-])\}", r"\1", out)
 
+    # 5-d) bar/hat/tilde 다음의 ^ 는 bar 밖으로 그룹 경계 추가
+    #      bar {rm{X}}^{2} → {bar {rm{X}}}^{2}
+    #      (한컴 수식편집기가 bar 범위를 ^까지 확장하는 현상 방지)
+    def _wrap_bar_before_sup(m: re.Match) -> str:
+        return "{" + m.group(1) + "}"
+
+    # 1단계 중첩 {...} 까지 허용
+    out = re.sub(
+        r"((?:bar|hat|tilde|vec|dot|ddot)\s*\{(?:[^{}]|\{[^{}]*\})*\})(?=\s*[\^_])",
+        _wrap_bar_before_sup,
+        out,
+    )
+
     # 6) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
     return out
