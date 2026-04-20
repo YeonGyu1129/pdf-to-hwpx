@@ -140,9 +140,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTS = {".pdf"}
 DEFAULT_TEMPLATE = HERE / "template.hwpx"
 
-VISION_PROMPT = r"""이 이미지에 있는 **수학 문제(문항)** 만 정확히 인식하세요.
-
-## ⚠️ 인식 범위 — 문제 본문만
+VISION_SCOPE_PROBLEMS_ONLY = r"""## ⚠️ 인식 범위 — 문제 본문만
 - **문항(문제 본문)만** 추출합니다
 - 다음은 **절대 포함하지 마세요**:
   - 풀이(Solution), 해설, 답안, 정답 설명
@@ -154,7 +152,23 @@ VISION_PROMPT = r"""이 이미지에 있는 **수학 문제(문항)** 만 정확
 ## ⚠️ 문제 누락 금지 (범위 내에서만)
 페이지 안의 **모든 문항**을 번호 순서대로 포함:
 - 번호가 1, 2, 3, ... 처럼 이어지면 모두 포함
-- 짧은 문항이라도 건너뛰지 말 것
+- 짧은 문항이라도 건너뛰지 말 것"""
+
+VISION_SCOPE_ALL = r"""## ⚠️ 인식 범위 — 보이는 것 모두
+- 페이지에 있는 **모든 텍스트·수식·표·손글씨**를 그대로 옮겨 적으세요
+- 문항(문제), 풀이, 해설, 답, 교사 주석 등 **전부 포함**
+- 문단·줄바꿈 구조도 가능한 그대로 유지
+- 손글씨 필기가 있으면 그 내용도 읽어서 포함
+
+## ⚠️ 누락 금지
+페이지의 **어떤 내용도 빠뜨리지 말 것**:
+- 작은 주석, 각주, 페이지 하단 글자까지
+- 여러 박스/섹션이 있으면 모두 포함
+- 손글씨 메모도 읽어서 기록"""
+
+VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확히 인식하세요.
+
+{SCOPE_SECTION}
 
 ## ⚠️ 괄호 구조 보존 — 매우 중요
 수식에 있는 **모든 괄호**를 원본 그대로 유지하세요.
@@ -257,15 +271,30 @@ VISION_PROMPT = r"""이 이미지에 있는 **수학 문제(문항)** 만 정확
 - 박스로 묶인 보기(ㄱ/ㄴ/ㄷ) 또는 조건(㈎㈏㈐)은 `[박스시작]` / `[박스끝]` 으로 감쌉니다
 - 그래프·도형이 있는 위치에는 `[그림: 간단한 설명]` 이라고 표시"""
 
-STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하세요.
 
-## ⚠️ 변환 범위 — 문항만
+def build_vision_prompt(mode: str) -> str:
+    """모드별 Vision 프롬프트 생성. mode: 'problems_only' | 'all'"""
+    scope = VISION_SCOPE_ALL if mode == "all" else VISION_SCOPE_PROBLEMS_ONLY
+    return VISION_PROMPT_TEMPLATE.replace("{SCOPE_SECTION}", scope)
+
+
+STRUCT_SCOPE_PROBLEMS_ONLY = r"""## ⚠️ 변환 범위 — 문항만
 - **문항(문제 본문)만** JSON 으로 변환합니다
 - 다음은 **절대 JSON 에 포함하지 마세요**:
   - 풀이, 해설, 답안, 정답 설명
   - "풀이:", "해설:", "답:", "Sol)" 같은 라벨 이후 내용
   - 보조 해설이나 교사 주석
-- 입력에 풀이/해설이 섞여 있어도 **문항 부분만** 골라서 변환
+- 입력에 풀이/해설이 섞여 있어도 **문항 부분만** 골라서 변환"""
+
+STRUCT_SCOPE_ALL = r"""## ⚠️ 변환 범위 — 모든 내용
+- 입력에 있는 **모든 내용**을 JSON 으로 변환합니다
+- 문항·풀이·해설·답·교사 주석 **모두 포함**
+- 원본의 순서와 구조를 유지하면서 segments 로 분해
+- 손글씨 필기·주석도 모두 포함"""
+
+STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하세요.
+
+{SCOPE_SECTION}
 
 ## ⚠️ 문항 누락 금지 (문항 범위 내에서)
 - 문제 번호가 1, 2, 3, ... 이어질 때 **중간 번호를 건너뛰지 말 것**
@@ -461,6 +490,13 @@ STRUCT_PROMPT = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하�
 - JSON 문자열 안에서 백슬래시는 `\\` 로 이스케이프 (예: `"\\mathrm{A}"`, `"\\overline{\\mathrm{AB}}"`)
 """
 
+
+def build_struct_prompt(mode: str) -> str:
+    """모드별 Struct 프롬프트 생성. mode: 'problems_only' | 'all'"""
+    scope = STRUCT_SCOPE_ALL if mode == "all" else STRUCT_SCOPE_PROBLEMS_ONLY
+    return STRUCT_PROMPT_TEMPLATE.replace("{SCOPE_SECTION}", scope)
+
+
 # ────────────────────────────────────────────────────────────
 # Claude 호출 헬퍼
 # ────────────────────────────────────────────────────────────
@@ -544,8 +580,18 @@ def prepare_image_for_vision(path: Path) -> tuple[bytes, str]:
     return buf.getvalue(), "image/jpeg"
 
 
-def vision_recognize(client: Anthropic, image_paths: list[Path]) -> list[str]:
-    """이미지들을 Claude Vision 으로 읽어 **페이지별** LaTeX 섞인 평문 리스트 반환."""
+def vision_recognize(
+    client: Anthropic,
+    image_paths: list[Path],
+    mode: str = "problems_only",
+) -> list[str]:
+    """이미지들을 Claude Vision 으로 읽어 **페이지별** LaTeX 섞인 평문 리스트 반환.
+
+    mode:
+      - "problems_only": 문항(문제 본문)만 추출
+      - "all": 풀이·해설·주석 모두 포함
+    """
+    prompt = build_vision_prompt(mode)
     outputs: list[str] = []
     progress = st.progress(0.0, text="Vision 인식 준비 중…")
     total = len(image_paths)
@@ -568,7 +614,7 @@ def vision_recognize(client: Anthropic, image_paths: list[Path]) -> list[str]:
                                 "data": img_b64,
                             },
                         },
-                        {"type": "text", "text": VISION_PROMPT},
+                        {"type": "text", "text": prompt},
                     ],
                 }
             ],
@@ -611,18 +657,20 @@ def structure_single(
     client: Anthropic,
     raw_text: str,
     max_tokens: int = STRUCT_MAX_TOKENS,
+    mode: str = "problems_only",
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     페이지 하나의 평문을 JSON 으로 구조화.
     반환: (problems, truncated) — truncated 는 응답이 잘렸는지 여부.
     """
+    prompt = build_struct_prompt(mode)
     resp = client.messages.create(
         model=EXTRACT_MODEL,
         max_tokens=max_tokens,
         messages=[
             {
                 "role": "user",
-                "content": STRUCT_PROMPT + "\n\n입력:\n" + raw_text,
+                "content": prompt + "\n\n입력:\n" + raw_text,
             }
         ],
     )
@@ -652,7 +700,11 @@ def _split_page_text(raw_text: str) -> list[str]:
     return ["\n".join(lines[:mid_idx]), "\n".join(lines[mid_idx:])]
 
 
-def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str, Any]]:
+def structure_problems(
+    client: Anthropic,
+    raw_texts: list[str],
+    mode: str = "problems_only",
+) -> list[dict[str, Any]]:
     """
     페이지별로 따로 구조화한 뒤 하나의 problems 리스트로 병합.
     응답이 잘리면(`max_tokens`) 페이지를 반으로 쪼개서 재시도.
@@ -665,7 +717,7 @@ def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str
         if not page_text.strip():
             continue
         try:
-            page_problems, truncated = structure_single(client, page_text)
+            page_problems, truncated = structure_single(client, page_text, mode=mode)
         except json.JSONDecodeError as e:
             st.warning(f"페이지 {idx} 구조화 실패: {e}. 재시도 중…")
             truncated = True
@@ -679,7 +731,7 @@ def structure_problems(client: Anthropic, raw_texts: list[str]) -> list[dict[str
                 if not chunk.strip():
                     continue
                 try:
-                    chunk_probs, _ = structure_single(client, chunk)
+                    chunk_probs, _ = structure_single(client, chunk, mode=mode)
                     recovered.extend(chunk_probs)
                 except json.JSONDecodeError:
                     continue
@@ -1084,6 +1136,18 @@ def main() -> None:
             "API 키는 환경변수 `ANTHROPIC_API_KEY` 또는\n"
             "Streamlit Secrets 에 설정하세요."
         )
+
+        extract_mode_label = st.radio(
+            "📝 추출 범위",
+            options=["문제만", "보이는 것 모두"],
+            index=0,
+            help=(
+                "• 문제만: 문항(본문)만 추출하고 풀이·해설·답은 제외\n"
+                "• 보이는 것 모두: 풀이·해설·손글씨·주석 포함 전부 옮겨 적음"
+            ),
+        )
+        extract_mode = "problems_only" if extract_mode_label == "문제만" else "all"
+
         dpi = st.slider("PDF 렌더링 DPI", min_value=100, max_value=250, value=150, step=10,
                         help="높을수록 인식 정확도↑ / 요청 크기↑. 전송 전 자동 리사이즈되지만 낮은 DPI가 더 빠릅니다.")
         show_raw = st.checkbox("Vision 인식 원문 보기", value=False)
@@ -1219,7 +1283,7 @@ def main() -> None:
 
         # 3) Vision 인식 (페이지별 리스트 반환)
         with st.status("Claude Vision 인식 중…", expanded=False) as status:
-            raw_texts = vision_recognize(client, image_paths)
+            raw_texts = vision_recognize(client, image_paths, mode=extract_mode)
             status.update(label=f"Vision 인식 완료 ({len(raw_texts)}장)", state="complete")
 
         if show_raw:
@@ -1231,7 +1295,7 @@ def main() -> None:
         # 4) 구조화 (페이지별로 나눠 호출 → 병합)
         with st.status("문제 구조화 중…", expanded=False) as status:
             try:
-                problems = structure_problems(client, raw_texts)
+                problems = structure_problems(client, raw_texts, mode=extract_mode)
             except json.JSONDecodeError as e:
                 status.update(label="JSON 파싱 실패", state="error")
                 st.exception(e)
