@@ -55,7 +55,25 @@ def _paren_boundary(out: str) -> str:
 
 
 def _patched_latex_to_hwpeq(latex: str) -> str:
+    # 입력 LaTeX 의 \mathit{X} 사전 보호 (skill 변환기가 그냥 {X} 로만 출력해
+    # 이탤릭 명시 표현이 사라지므로)
+    _mathit_placeholders: list[str] = []
+
+    def _save_mathit(m: re.Match) -> str:
+        idx = len(_mathit_placeholders)
+        _mathit_placeholders.append(m.group(1))
+        return f"\x01{idx}\x01"
+
+    latex = re.sub(r"\\mathit\{([^{}]+)\}", _save_mathit, latex)
+
     out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
+
+    # 보호된 \mathit 복원 → it{X}
+    out = re.sub(
+        r"\x01(\d+)\x01",
+        lambda m: f"it{{{_mathit_placeholders[int(m.group(1))]}}}",
+        out,
+    )
 
     # 1) "X" → rm{X}  (따옴표는 mathrm 변환에서만 나오는 것으로 가정)
     out = re.sub(r'"([^"]+)"', r"rm{\1}", out)
@@ -91,6 +109,9 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     #      한글 수식편집기가 "숫자,~command" 패턴에서 이상하게 파싱하는 현상 방지를 위해
     #      `~` 뒤에 공백 하나를 더 삽입.
     out = re.sub(r",\s*(?!~)", ",~ ", out)
+    # 5-a2) \cdots 양옆 공백 (PDF 규칙 ⑦)
+    out = re.sub(r"(?<![~ ])cdots", " cdots", out)
+    out = re.sub(r"cdots(?![~ ])", "cdots ", out)
     # 5-b) 집합 구분자 | 좌우 공백 추가 ({A|B} → {A ~|~ B})
     #      절댓값 left |...right | 은 제외
     out = re.sub(r"(?<!left)(?<!right) \| ", " ~|~ ", out)
@@ -169,6 +190,54 @@ VISION_SCOPE_ALL = r"""## ⚠️ 인식 범위 — 보이는 것 모두
 VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확히 인식하세요.
 
 {SCOPE_SECTION}
+
+## 🌟 LaTeX 작성 규칙 (반드시 준수)
+
+### ① 모든 알파벳·숫자·수학기호는 수식($...$)으로
+본문 텍스트에 알파벳·숫자 절대 넣지 말 것.
+- ❌ "최댓값을 M이라 하면, M=2"
+- ✅ "최댓값을 $M$이라 하면, $M=2$"
+
+### ② 단일 대문자의 글꼴 구분 (같은 문자라도 용도에 따라 다름)
+- **점·꼭짓점·원점·중심** (점 A, 꼭짓점 P, 원점 O): `\mathrm{A}`, `\mathrm{P}`, `\mathrm{O}` (로만체, 필수)
+- **변수** (최댓값 M, 최솟값 m, 적분값 I, 합 S, 함수 f): `M`, `m`, `I`, `S`, `f` (그대로, 자동 이탤릭)
+- **도형·집합·곡선·영역** (구 S, 원 C, 영역 D): `\mathit{S}`, `\mathit{C}`, `\mathit{D}` (이탤릭 명시)
+
+### ③ 벡터·선분·점쌍은 \mathrm 필수 ⚠️ **매우 중요**
+
+이미지에서 **글자 위에 작은 화살표(→)가 있으면 무조건 벡터**.
+**"AP", "BQ" 처럼만 보여도 위에 화살표가 있다면 반드시 `\overrightarrow{\mathrm{AP}}` 로 쓸 것.**
+
+- 점쌍 벡터: `\overrightarrow{\mathrm{AB}}` (화살표 있는 AB)
+- 합 벡터: `\overrightarrow{\mathrm{AP}} + \overrightarrow{\mathrm{BQ}}`
+- 첨자 점쌍: `\overrightarrow{\mathrm{O}_{1}\mathrm{P}}` (O 위에 1)
+- 벡터 크기(절댓값): `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
+- 소문자 벡터: `\vec{a}`
+- 영벡터: `\vec{0}`
+- 선분 (선만 있는 경우): `\overline{\mathrm{AB}}`
+- 점 좌표: `\mathrm{A}(2, 0)`
+- 각: `\angle \mathrm{ABC}`
+- 삼각형: `\triangle \mathrm{ABC}`
+
+⚠️ **자주 놓치는 실수**:
+- ❌ 이미지에 화살표 있는데 그냥 `AB`, `\mathrm{AB}` 로 인식 (화살표 누락)
+- ✅ 반드시 `\overrightarrow{\mathrm{AB}}` 로
+- ❌ `\vec{AB}` (점쌍에 `\vec` 쓰면 화살표 짧아짐)
+- ✅ `\overrightarrow{\mathrm{AB}}`
+
+### ④ 비례식은 하나의 수식으로
+- ✅ `$3:1$`, `$1:2:3$`
+- ❌ 절대 쪼개지 말 것
+
+### ⑤ 큰 표현 감싸는 괄호는 `\left( \right)`
+분수·벡터·근호·합·절댓값을 감쌀 때:
+- ✅ `\left(\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}\right)`
+- ✅ `\left|\overrightarrow{\mathrm{AP}}\right|`
+- 단, 단순 정수만 들어가는 경우 (`(2, 0)`, `f(x)`) 는 그냥 `()` 도 OK
+
+### ⑥ LaTeX 공백 명령 금지
+- ❌ `\;`, `\,`, `\:`, `\!`, `\quad`, `\qquad` 모두 금지
+- ✅ 일반 공백 사용
 
 ## ⚠️ 괄호 구조 보존 — 매우 중요
 수식에 있는 **모든 괄호**를 원본 그대로 유지하세요.
@@ -300,6 +369,51 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 - 문제 번호가 1, 2, 3, ... 이어질 때 **중간 번호를 건너뛰지 말 것**
 - 짧은 문항이라도 포함
 - 하나의 문항 안에서는 **내용 요약·축약 금지**. 모든 문장을 segments 로 분해
+
+## 🌟 LaTeX 작성 규칙 (반드시 준수)
+
+### ① 모든 알파벳·숫자·수학기호는 formula 세그먼트로
+- ❌ `{"type":"text","content":"최댓값을 M이라 하면, M=2"}`
+- ✅ `{"type":"text","content":"최댓값을 "}, {"type":"formula","content":"M"}, {"type":"text","content":"이라 하면, "}, {"type":"formula","content":"M=2"}`
+
+### ② 단일 대문자 글꼴 구분
+- **점/꼭짓점/원점/중심**: `\mathrm{A}` (로만체, 필수)
+- **변수** (최댓값 M, 함수 f): `M`, `f` (그대로)
+- **도형/집합/곡선/영역**: `\mathit{S}`, `\mathit{C}` (이탤릭 명시)
+
+### ③ 벡터/선분/점쌍은 \mathrm 필수 ⚠️ **매우 중요**
+
+이미지/원문에서 **글자 위에 화살표(→)가 있는 것은 무조건 벡터**.
+입력 텍스트에서 `AP`, `BQ`, `\mathrm{AP}+\mathrm{BQ}` 같이 보여도 **벡터 컨텍스트**라면 반드시 화살표 추가:
+
+- 점쌍 벡터: `\overrightarrow{\mathrm{AB}}` (절대 `\mathrm{AB}` 만 쓰지 말 것)
+- 첨자 점쌍: `\overrightarrow{\mathrm{O}_{1}\mathrm{P}}`
+- 벡터 크기: `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
+- 소문자 벡터: `\vec{a}`
+- 선분 (화살표 없을 때만): `\overline{\mathrm{AB}}`
+- 각: `\angle \mathrm{ABC}`
+- 삼각형: `\triangle \mathrm{ABC}`
+- 점 좌표: `\mathrm{A}(2, 0)` (점 이름인데 `\mathrm` 누락 금지)
+
+⚠️ Vision 출력에 화살표 표기가 누락되어 있어도, **벡터 합산식이나 벡터 절댓값 등 벡터 표현이 명백한 컨텍스트라면 `\overrightarrow{}` 를 명시적으로 추가**할 것.
+
+### ④ 비례식은 무조건 하나의 formula
+- ✅ `{"type":"formula","content":"3:1"}`
+- ❌ `{"type":"formula","content":"3"}, {"type":"text","content":" : "}, {"type":"formula","content":"1"}` 절대 쪼개지 말 것
+
+### ⑤ 큰 표현 감싸는 괄호는 `\left( \right)`
+- ✅ `\left(\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}\right)`
+- ✅ `\left|\overrightarrow{\mathrm{AP}}\right|`
+- 단순 정수만 (`(2, 0)`, `f(x)`) 는 그냥 `()` 도 OK
+
+### ⑥ LaTeX 공백 명령 금지
+- ❌ `\;`, `\,`, `\:`, `\!`, `\quad`, `\qquad`
+- ✅ 일반 공백 사용
+
+### ⑦ 자동 변환 (그대로 쓰면 됨)
+- `\cdots` → 자동 공백 추가
+- 연속 대문자 2글자+ (AB, ABC) → 자동 `\mathrm`
+- 단일 대/소문자 변수 → 자동 이탤릭
 
 ## ⚠️ LaTeX 괄호 구조 보존 — 매우 중요
 원본에 있는 **모든 괄호 종류**를 그대로 유지하세요. 절대 단순화하거나 생략하지 마세요.
@@ -793,8 +907,22 @@ def _auto_mathrm(latex: str) -> str:
     #      공백을 삽입해 버그 회피: \int _{0}^{\frac{\pi}{4}}
     s = re.sub(r"(\\(?:int|sum|prod|oint|iint|iiint|bigcup|bigcap))(?=[_^])", r"\1 ", s)
 
-    # 0-d) \left( / \right) 는 그대로 유지 — 아래 단계에서 left( / right) 로
-    #      변환되도록 (공백 없이) 만들어야 한글 수식편집기가 정상 렌더.
+    # 0-d) \left( / \right) 는 유지 (PDF 규칙 ⑤)
+    #     큰 표현식(분수/벡터/근호) 감쌀 때 자동 크기 조정 필요.
+    #     후처리에서 'left ( ... right )' → 'left( ... right)' 로 공백만 제거.
+
+    # 0-e) 불필요한 LaTeX 공백 명령 제거 (PDF 규칙 ⑥)
+    s = re.sub(r"\\[,:;]", " ", s)            # \,  \:  \;
+    s = s.replace(r"\!", "")                   # \! 제거
+    s = s.replace(r"\quad", " ")
+    s = s.replace(r"\qquad", "  ")
+
+    # 0-f) \overrightarrow / \overleftarrow / \overleftrightarrow 화살표 누락 회피
+    #     skill 변환기가 이 명령을 그냥 {X} 로만 출력해 화살표 사라짐.
+    #     \vec{...} 로 치환해 vec 키워드가 살아남도록
+    s = re.sub(r"\\overrightarrow\b", r"\\vec", s)
+    s = re.sub(r"\\overleftarrow\b", r"\\vec", s)
+    s = re.sub(r"\\overleftrightarrow\b", r"\\vec", s)
 
     # 0-b) 그리스문자 + 아래첨자 버그 회피
     #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
@@ -840,10 +968,11 @@ def _auto_mathrm(latex: str) -> str:
     # 3) LaTeX 명령 토큰 보호 (인수 없음). 예: \triangle, \overline, \frac, \cup, \sin
     s = re.sub(r"\\[a-zA-Z]+", _save, s)
 
-    # 4) 대문자 연속(프라임 포함)을 \mathrm{...} 로 감싸기
-    #    - (?:[A-Z]'*)+  : 대문자 1개 뒤에 0개 이상의 프라임, 이 조합이 1회 이상
+    # 4) 연속 대문자 2글자 이상만 \mathrm{...} 로 감싸기 (PDF 규칙 ⑦ 자동 변환)
+    #    단일 대문자는 Claude 가 명시적으로 \mathrm 또는 \mathit 적용
+    #    (점이면 \mathrm{A}, 도형이면 \mathit{S}, 변수면 그대로)
     s = re.sub(
-        r"(?:[A-Z]'*)+",
+        r"(?:[A-Z]'*){2,}",
         lambda m: f"\\mathrm{{{m.group(0)}}}",
         s,
     )
