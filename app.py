@@ -137,6 +137,28 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     # 6) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
 
+    # 6-b) `vec rm{X}` → `vec{rm X}` 형태로 그룹화
+    #     한컴 수식편집기에서 vec 명령은 인자가 {...} 그룹 형태여야 화살표가 위에 정상 표시됨.
+    #     skill 변환기가 `vec rm{X}` 로 출력하면 한컴이 `{vec{rm}} rm X` 로 잘못 해석.
+    # 6-b-1) 첨자 점쌍 (vec rm{X}_{n}rm{Y} ['|prime]?)
+    out = re.sub(
+        r"vec rm\{([^{}]+)\}(_\{[^{}]+\})rm\{([^{}]+)\}(\s*'\s*|\s+prime\s*)?",
+        lambda m: f"vec{{rm {m.group(1)} {m.group(2)} rm {m.group(3)}{m.group(4) or ''}}}",
+        out,
+    )
+    # 6-b-2) 끝에 첨자만 있는 경우 (vec rm{X}_{n} ['|prime]?)
+    out = re.sub(
+        r"vec rm\{([^{}]+)\}(_\{[^{}]+\})(\s*'\s*|\s+prime\s*)?",
+        lambda m: f"vec{{rm {m.group(1)} {m.group(2)}{m.group(3) or ''}}}",
+        out,
+    )
+    # 6-b-3) 단순한 경우 (vec rm{X} ['|prime]?)
+    out = re.sub(
+        r"vec rm\{([^{}]+)\}(\s*'\s*|\s+prime\s*)?",
+        lambda m: f"vec{{rm {m.group(1)}{m.group(2) or ''}}}",
+        out,
+    )
+
     # 7) 괄호 경계 보호 (맨 마지막에 적용)
     #    한글 수식편집기가 `}(` 나 `{(` 패턴에서 `(` 를 빈 그룹 `{}` 로
     #    오인하는 버그 회피. 공백 정리 뒤에 실행해야 보존됨.
@@ -229,11 +251,15 @@ VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확
 - ✅ `$3:1$`, `$1:2:3$`
 - ❌ 절대 쪼개지 말 것
 
-### ⑤ 큰 표현 감싸는 괄호는 `\left( \right)`
-분수·벡터·근호·합·절댓값을 감쌀 때:
+### ⑤ 큰 표현 감싸는 괄호는 `\left( \right)` ⚠️ **매우 중요**
+
+⚠️ **벡터·분수·근호·합이 들어간 괄호는 반드시 `\left( \right)`** — 일반 `()` 쓰면 한컴에서 크기 조정 안 됨.
+
+- ✅ `\left(\overrightarrow{\mathrm{O}_1\mathrm{P}}+\overrightarrow{\mathrm{O}_3\mathrm{Q}'}\right)`
 - ✅ `\left(\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}\right)`
-- ✅ `\left|\overrightarrow{\mathrm{AP}}\right|`
-- 단, 단순 정수만 들어가는 경우 (`(2, 0)`, `f(x)`) 는 그냥 `()` 도 OK
+- ✅ `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
+- ❌ `(\overrightarrow{\mathrm{O}_1\mathrm{P}}+\overrightarrow{\mathrm{O}_3\mathrm{Q}'})` — 벡터 합인데 `\left( \right)` 안 씀
+- 단, **단순 정수·변수만** 들어가는 경우 (`(2, 0)`, `f(x)`, `(k+1)`) 는 그냥 `()` 도 OK
 
 ### ⑥ LaTeX 공백 명령 금지
 - ❌ `\;`, `\,`, `\:`, `\!`, `\quad`, `\qquad` 모두 금지
@@ -401,10 +427,14 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 - ✅ `{"type":"formula","content":"3:1"}`
 - ❌ `{"type":"formula","content":"3"}, {"type":"text","content":" : "}, {"type":"formula","content":"1"}` 절대 쪼개지 말 것
 
-### ⑤ 큰 표현 감싸는 괄호는 `\left( \right)`
+### ⑤ 큰 표현 감싸는 괄호는 `\left( \right)` ⚠️ **매우 중요**
+
+벡터·분수·근호·합이 들어간 괄호는 반드시 `\left( \right)` 로.
+- ✅ `\left(\overrightarrow{\mathrm{O}_1\mathrm{P}}+\overrightarrow{\mathrm{O}_3\mathrm{Q}'}\right)`
 - ✅ `\left(\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}\right)`
-- ✅ `\left|\overrightarrow{\mathrm{AP}}\right|`
-- 단순 정수만 (`(2, 0)`, `f(x)`) 는 그냥 `()` 도 OK
+- ✅ `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
+- ❌ `(\overrightarrow{X}+\overrightarrow{Y})` ← 벡터인데 그냥 `()`
+- 단순 정수·변수만 (`(2, 0)`, `f(x)`) 는 그냥 `()` 도 OK
 
 ### ⑥ LaTeX 공백 명령 금지
 - ❌ `\;`, `\,`, `\:`, `\!`, `\quad`, `\qquad`
