@@ -223,7 +223,47 @@ EXTRACT_MODEL = "claude-opus-4-5"
 # 모델별 max_tokens 한도에 맞춰 설정. 한도를 넘으면 BadRequestError.
 VISION_MAX_TOKENS = 8000
 STRUCT_MAX_TOKENS = 8000
+VERIFY_MAX_TOKENS = 6000  # 검수 응답 (JSON 리포트)
 MAX_TOKENS = 8000  # 하위 호환용 (기존 참조)
+
+# ────────────────────────────────────────────────────────────
+# 정확도 프리셋
+# ────────────────────────────────────────────────────────────
+# 각 키:
+#   verify         : 검수 실행 여부
+#   max_retries    : 검수 후 자동 수정 최대 재시도 횟수
+#   double_pass    : 이중 변환 (동일 이미지 2회 변환 후 비교) 여부
+#   default_dpi    : 권장 DPI
+ACCURACY_PRESETS = {
+    "빠름": {
+        "verify": False,
+        "max_retries": 0,
+        "double_pass": False,
+        "default_dpi": 150,
+        "desc": "검수 없음 — 가장 저렴, 단순 변환만",
+    },
+    "균형": {
+        "verify": True,
+        "max_retries": 1,
+        "double_pass": False,
+        "default_dpi": 150,
+        "desc": "검수 + 자동 수정 1회 — 누락 보정 (비용 약 2~3배)",
+    },
+    "정확": {
+        "verify": True,
+        "max_retries": 3,
+        "double_pass": False,
+        "default_dpi": 200,
+        "desc": "검수 + 자동 수정 3회 — 오타까지 수정 (비용 약 4배)",
+    },
+    "최정밀": {
+        "verify": True,
+        "max_retries": 3,
+        "double_pass": True,
+        "default_dpi": 200,
+        "desc": "정확 모드 + 이중 변환 비교 — 최고 정확도 (비용 약 8배)",
+    },
+}
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTS = {".pdf"}
@@ -1008,6 +1048,188 @@ def structure_problems(
     return _insert_problem_spacing(cleaned)
 
 
+# ════════════════════════════════════════════════════════════
+# 검수 (verify) 단계
+# ════════════════════════════════════════════════════════════
+
+VERIFY_PROMPT = r"""당신은 수학 문제 변환 결과의 **검수자**입니다.
+
+원본 이미지와 변환된 텍스트(LaTeX 포함)를 비교하여
+**누락·오타·잘못된 수식**을 찾으세요.
+
+## 검수 기준
+1. **누락**: 원본에 있는데 변환 결과에 빠진 문제 / 보기 / 수식
+2. **오타**: 한글 단어가 잘못 변환된 경우 ("최댓값" ↔ "최솟값" 등)
+3. **수식 오류**: LaTeX 수식이 원본과 다른 경우 (숫자 틀림, 변수 틀림, 첨자 누락 등)
+4. **구조 오류**: 객관식 보기가 본문에 붙어버린 경우 등
+
+## 응답 형식 — 반드시 JSON
+```json
+{
+  "is_clean": false,
+  "issues_count": 3,
+  "missing": [
+    {"problem_number": "12", "description": "12번 문제 전체 누락"}
+  ],
+  "errors": [
+    {"problem_number": "5", "type": "오타", "original": "최솟값", "current": "최댓값", "fix": "최솟값"},
+    {"problem_number": "8", "type": "수식", "original": "x^2+y^2=4", "current": "x^2+y^2=5", "fix": "x^2+y^2=4"}
+  ],
+  "summary": "문제 12 누락, 문제 5 오타, 문제 8 수식 오류"
+}
+```
+
+오타가 전혀 없으면:
+```json
+{"is_clean": true, "issues_count": 0, "missing": [], "errors": [], "summary": "검수 통과"}
+```
+
+## 주의
+- 사소한 공백·줄바꿈 차이는 무시
+- 한컴 수식 명령(`rm{}`, `vec{}` 등)은 hwpEQ 변환 산물이므로 무시 — **수식 의미**만 비교
+- JSON 만 반환 (마크다운 코드펜스 금지)
+"""
+
+
+def _problems_to_text(problems: list[dict[str, Any]]) -> str:
+    """problems 리스트를 검수용 평문(LaTeX 포함)으로 직렬화."""
+    lines: list[str] = []
+    for prob in problems:
+        if prob.get("type") == "image_placeholder":
+            lines.append(f"[그림: {prob.get('description', '')}]")
+            continue
+        num = prob.get("number", "")
+        segs = prob.get("segments")
+        if not isinstance(segs, list):
+            continue
+        # 박스 — 2차원
+        if prob.get("box") and segs and isinstance(segs[0], list):
+            lines.append(f"\n[{num} {prob.get('box_type', 'box')}]")
+            for row in segs:
+                row_text = "".join(
+                    f"${s['content']}$" if s.get("type") == "formula" else s.get("content", "")
+                    for s in row if isinstance(s, dict)
+                )
+                lines.append(row_text)
+            continue
+        # 일반 문단
+        body = "".join(
+            f"${s['content']}$" if s.get("type") == "formula" else s.get("content", "")
+            for s in segs if isinstance(s, dict)
+        )
+        if num:
+            lines.append(f"\n{num}. {body}")
+        else:
+            lines.append(body)
+    return "\n".join(lines)
+
+
+def verify_problems(
+    client: Anthropic,
+    image_paths: list[Path],
+    problems: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    원본 이미지(들) 와 변환된 problems 비교 검수.
+    반환: {"is_clean": bool, "issues_count": int, "missing": [...], "errors": [...]}
+    """
+    converted_text = _problems_to_text(problems)
+
+    # 모든 이미지를 한 번의 요청에 첨부 (페이지 적을 때) 또는 첫 페이지만
+    # 간단히 모든 이미지 첨부. Vision 한도(20장) 넘으면 처음 5장만.
+    use_images = image_paths[:5] if len(image_paths) > 5 else image_paths
+
+    image_blocks = []
+    for path in use_images:
+        img_bytes, mime = prepare_image_for_vision(path)
+        img_b64 = base64.b64encode(img_bytes).decode()
+        image_blocks.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": img_b64},
+        })
+
+    content_blocks = image_blocks + [
+        {"type": "text", "text": VERIFY_PROMPT + "\n\n## 변환된 텍스트\n\n" + converted_text}
+    ]
+
+    resp = client.messages.create(
+        model=EXTRACT_MODEL,
+        max_tokens=VERIFY_MAX_TOKENS,
+        messages=[{"role": "user", "content": content_blocks}],
+    )
+    text = resp.content[0].text
+    try:
+        data = _parse_json_loose(text)
+    except json.JSONDecodeError:
+        # 파싱 실패 시 안전한 기본값
+        return {"is_clean": True, "issues_count": 0, "missing": [], "errors": [],
+                "summary": "검수 응답 파싱 실패 - 검수 건너뜀"}
+    # 기본 필드 채우기
+    data.setdefault("is_clean", data.get("issues_count", 0) == 0)
+    data.setdefault("issues_count", len(data.get("missing", [])) + len(data.get("errors", [])))
+    data.setdefault("missing", [])
+    data.setdefault("errors", [])
+    data.setdefault("summary", "")
+    return data
+
+
+def _verification_to_feedback(verification: dict[str, Any]) -> str:
+    """검수 결과를 다음 구조화 호출에 전달할 피드백 텍스트로 변환."""
+    lines = ["## ⚠️ 이전 변환 검수 결과 (반드시 반영하여 수정)"]
+
+    missing = verification.get("missing", [])
+    if missing:
+        lines.append("\n### 누락된 항목 — 이번에는 반드시 포함")
+        for m in missing:
+            num = m.get("problem_number", "?")
+            desc = m.get("description", "")
+            lines.append(f"- 문제 {num}: {desc}")
+
+    errors = verification.get("errors", [])
+    if errors:
+        lines.append("\n### 오타·오류 — 이번에는 다음과 같이 수정")
+        for e in errors:
+            num = e.get("problem_number", "?")
+            etype = e.get("type", "")
+            orig = e.get("original", "")
+            curr = e.get("current", "")
+            fix = e.get("fix", "")
+            lines.append(
+                f"- 문제 {num} ({etype}): 잘못 '{curr}' → 올바름 '{fix or orig}'"
+            )
+
+    lines.append("\n위 사항을 모두 반영해서 처음부터 다시 정확하게 변환하세요.")
+    return "\n".join(lines)
+
+
+def regenerate_with_feedback(
+    client: Anthropic,
+    raw_texts: list[str],
+    verification: dict[str, Any],
+    mode: str = "problems_only",
+) -> list[dict[str, Any]]:
+    """검수 피드백을 반영해 problems 재생성."""
+    feedback = _verification_to_feedback(verification)
+
+    all_problems: list[dict[str, Any]] = []
+    progress = st.progress(0.0, text="검수 결과 반영 재변환 중…")
+    total = len(raw_texts)
+    for idx, page_text in enumerate(raw_texts, 1):
+        progress.progress((idx - 1) / total, text=f"재변환 중… ({idx}/{total})")
+        if not page_text.strip():
+            continue
+        # 피드백을 입력 텍스트 앞에 추가
+        augmented_text = feedback + "\n\n## 원본 입력 텍스트\n" + page_text
+        try:
+            page_problems, _ = structure_single(client, augmented_text, mode=mode)
+        except json.JSONDecodeError:
+            continue
+        all_problems.extend(page_problems)
+    progress.progress(1.0, text="재변환 완료")
+    cleaned = sanitize_problems(all_problems)
+    return _insert_problem_spacing(cleaned)
+
+
 def _auto_mathrm(latex: str) -> str:
     """
     수식 안의 대문자(점·선분·집합 등)에 자동으로 \\mathrm 을 적용하고
@@ -1429,10 +1651,31 @@ def main() -> None:
         )
         extract_mode = "problems_only" if extract_mode_label == "문제만" else "all"
 
-        dpi = st.slider("PDF 렌더링 DPI", min_value=100, max_value=250, value=150, step=10,
-                        help="높을수록 인식 정확도↑ / 요청 크기↑. 전송 전 자동 리사이즈되지만 낮은 DPI가 더 빠릅니다.")
+        # 정확도 프리셋
+        accuracy_label = st.radio(
+            "🎚️ 정확도 레벨",
+            options=list(ACCURACY_PRESETS.keys()),
+            index=0,  # 기본: 빠름 (비용 절감)
+            help="\n".join(f"• {k}: {v['desc']}" for k, v in ACCURACY_PRESETS.items()),
+        )
+        accuracy = ACCURACY_PRESETS[accuracy_label]
+        st.caption(f"📝 {accuracy['desc']}")
+
+        # DPI - 정확도 레벨에서 권장값 자동 적용 (사용자 수정 가능)
+        dpi = st.slider(
+            "PDF 렌더링 DPI",
+            min_value=100, max_value=250,
+            value=accuracy["default_dpi"],
+            step=10,
+            help="높을수록 인식 정확도↑ / 요청 크기↑.",
+        )
         show_raw = st.checkbox("Vision 인식 원문 보기", value=False)
         show_json = st.checkbox("구조화 JSON 보기", value=False)
+        show_verify = st.checkbox(
+            "검수 리포트 보기",
+            value=accuracy["verify"],
+            help="검수 모드일 때 누락/오타 리포트 표시",
+        )
 
     uploaded = st.file_uploader(
         "문제 파일 업로드 (여러 개 가능)",
@@ -1590,6 +1833,41 @@ def main() -> None:
             with st.expander("🧾 구조화 결과 JSON"):
                 st.json(problems)
 
+        # 4-b) 검수 + 자동 수정 (정확도 프리셋에 따라)
+        verify_history: list[dict[str, Any]] = []
+        if accuracy["verify"]:
+            for attempt in range(accuracy["max_retries"] + 1):
+                label = "검수 실행 중…" if attempt == 0 else f"재검수 ({attempt}회차)…"
+                with st.status(label, expanded=False) as status:
+                    verification = verify_problems(client, image_paths, problems)
+                    status.update(
+                        label=f"검수 완료 — {verification.get('summary', '')}",
+                        state="complete",
+                    )
+                verify_history.append(verification)
+
+                if verification.get("is_clean", False):
+                    st.success("✅ 검수 통과 — 오타·누락 없음")
+                    break
+
+                # 마지막 시도면 재변환 안 함
+                if attempt >= accuracy["max_retries"]:
+                    st.warning(
+                        f"⚠️ 검수 후에도 {verification.get('issues_count', 0)}건 남음. "
+                        "추가 재시도 한도(`{}`)에 도달.".format(accuracy["max_retries"])
+                    )
+                    break
+
+                # 재변환
+                st.info(
+                    f"🔄 {verification.get('issues_count', 0)}건 발견 — 자동 수정 후 재변환합니다."
+                )
+                with st.status("검수 결과 반영 재변환 중…", expanded=False) as status:
+                    problems = regenerate_with_feedback(
+                        client, raw_texts, verification, mode=extract_mode
+                    )
+                    status.update(label="재변환 완료", state="complete")
+
         # 5) HWPX 생성
         output_path = workdir / "converted.hwpx"
         with st.status("HWPX 파일 생성 중…", expanded=False) as status:
@@ -1606,13 +1884,70 @@ def main() -> None:
         data = output_path.read_bytes()
         kb = len(data) / 1024
         st.success(f"✅ 변환 완료 — {kb:.1f} KB")
-        st.download_button(
-            "⬇️ HWPX 다운로드",
-            data=data,
-            file_name="converted.hwpx",
-            mime="application/vnd.hancom.hwpx",
-            type="primary",
+
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                "⬇️ HWPX 다운로드",
+                data=data,
+                file_name="converted.hwpx",
+                mime="application/vnd.hancom.hwpx",
+                type="primary",
+            )
+        # 검수 리포트 마크다운 (검수 실행했을 때만)
+        if verify_history:
+            report_md = _build_verify_report_md(verify_history, accuracy_label)
+            with col_dl2:
+                st.download_button(
+                    "📋 검수 리포트 (.md)",
+                    data=report_md.encode("utf-8"),
+                    file_name="verify_report.md",
+                    mime="text/markdown",
+                )
+            if show_verify:
+                with st.expander("📋 검수 리포트 (전체 이력)", expanded=True):
+                    st.markdown(report_md)
+
+
+def _build_verify_report_md(history: list[dict[str, Any]], preset_name: str) -> str:
+    """검수 이력을 마크다운 리포트로."""
+    lines = [
+        "# 검수 리포트",
+        f"\n- 정확도 레벨: **{preset_name}**",
+        f"- 검수 시도 횟수: **{len(history)}회**\n",
+    ]
+    for i, v in enumerate(history, 1):
+        lines.append(f"\n## {i}차 검수")
+        lines.append(f"- 상태: {'✅ 통과' if v.get('is_clean') else '⚠️ 보정 필요'}")
+        lines.append(f"- 발견 건수: {v.get('issues_count', 0)}건")
+        lines.append(f"- 요약: {v.get('summary', '')}")
+
+        missing = v.get("missing", [])
+        if missing:
+            lines.append("\n### 누락")
+            for m in missing:
+                lines.append(
+                    f"- 문제 {m.get('problem_number', '?')}: {m.get('description', '')}"
+                )
+        errors = v.get("errors", [])
+        if errors:
+            lines.append("\n### 오타·오류")
+            for e in errors:
+                lines.append(
+                    f"- 문제 {e.get('problem_number', '?')} ({e.get('type', '?')}): "
+                    f"`{e.get('current', '')}` → `{e.get('fix') or e.get('original', '')}`"
+                )
+
+    # 최종 상태
+    final = history[-1]
+    lines.append("\n---\n## 최종 상태")
+    if final.get("is_clean"):
+        lines.append("✅ **모든 오타 자동 수정 완료**")
+    else:
+        lines.append(
+            f"⚠️ **{final.get('issues_count', 0)}건 잔여** — 수동 확인 권장"
         )
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
