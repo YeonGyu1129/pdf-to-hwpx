@@ -167,22 +167,23 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     # 6-b) `vec rm{X}` / `vec it{X}` 형태로 그룹화
     #     한컴 수식편집기에서 vec 명령은 인자가 {...} 그룹 형태여야 화살표가 위에 정상 표시됨.
     #     skill 변환기가 `vec rm{X}` 로 출력하면 한컴이 `{vec{rm}} rm X` 로 잘못 해석.
+    #     `{vec{rm X}}` 형태로 외부 그룹까지 추가해 후속 토큰과 격리.
     # 6-b-1) 첨자 점쌍 (vec rm{X}_{n}rm{Y} ['|prime]?)
     out = re.sub(
         r"vec rm\{([^{}]+)\}(_\{[^{}]+\})rm\{([^{}]+)\}(\s*'\s*|\s+prime\s*)?",
-        lambda m: f"vec{{rm {m.group(1)} {m.group(2)} rm {m.group(3)}{m.group(4) or ''}}}",
+        lambda m: f"{{vec{{rm {m.group(1)} {m.group(2)} rm {m.group(3)}{m.group(4) or ''}}}}}",
         out,
     )
     # 6-b-2) 끝에 첨자만 있는 경우 (vec rm{X}_{n} ['|prime]?)
     out = re.sub(
         r"vec rm\{([^{}]+)\}(_\{[^{}]+\})(\s*'\s*|\s+prime\s*)?",
-        lambda m: f"vec{{rm {m.group(1)} {m.group(2)}{m.group(3) or ''}}}",
+        lambda m: f"{{vec{{rm {m.group(1)} {m.group(2)}{m.group(3) or ''}}}}}",
         out,
     )
     # 6-b-3) 단순한 점쌍 (vec rm{X} ['|prime]?)
     out = re.sub(
         r"vec rm\{([^{}]+)\}(\s*'\s*|\s+prime\s*)?",
-        lambda m: f"vec{{rm {m.group(1)}{m.group(2) or ''}}}",
+        lambda m: f"{{vec{{rm {m.group(1)}{m.group(2) or ''}}}}}",
         out,
     )
     # 6-b-4) 소문자 벡터 (vec it{X} → {vec{it X}})
@@ -213,6 +214,36 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
 
 
 pdf_to_hwpx.latex_to_hwpeq = _patched_latex_to_hwpeq
+
+# ────────────────────────────────────────────────────────────
+# make_section_xml 출력 보정 (monkey-patch)
+# ────────────────────────────────────────────────────────────
+# pdf_to_hwpx.make_section_xml 은 problem 마다 trailing empty paragraph 를
+# 1개씩 무조건 덧붙여 (pdf_to_hwpx.py:934-941) 같은 문제의 풀이 여러 줄이
+# 별개 problem 으로 들어오면 줄과 줄 사이에 빈 줄이 보이는 문제를 만든다.
+# 여기서는 출력 XML 에서 그 빈 문단만 정확히 골라 제거한다.
+# insert_problem_gaps 가 만든 dummy 문단은 <hp:t> </hp:t> 를 포함하므로 매치되지 않음.
+
+_TRAILING_EMPTY_P_RE = re.compile(
+    r'\n<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+    r'pageBreak="0" columnBreak="0" merged="0">'
+    r'<hp:run charPrIDRef="0"/>'  # self-closing run = 본문이 없는 빈 문단 표식
+    r'<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" '
+    r'textheight="1000" baseline="850" spacing="600" horzpos="0" '
+    r'horzsize="42520" flags="393216"/></hp:linesegarray>'
+    r'</hp:p>'
+)
+
+if not hasattr(pdf_to_hwpx, "_original_make_section_xml"):
+    pdf_to_hwpx._original_make_section_xml = pdf_to_hwpx.make_section_xml
+
+
+def _patched_make_section_xml(problems: list) -> str:
+    xml = pdf_to_hwpx._original_make_section_xml(problems)
+    return _TRAILING_EMPTY_P_RE.sub("", xml)
+
+
+pdf_to_hwpx.make_section_xml = _patched_make_section_xml
 
 # ────────────────────────────────────────────────────────────
 # 상수 / 설정
