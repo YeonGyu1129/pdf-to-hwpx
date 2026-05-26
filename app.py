@@ -159,6 +159,13 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
         out,
     )
 
+    # 6-c) `\right|+\left|` 짝짓기 깨짐 안전망
+    #     skill 변환기가 절댓값 연속 (\left|...\right|+\left|...\right|) 을
+    #     변환할 때 짝이 어긋나 `right left | + left right |` 같은
+    #     이상한 출력을 만드는 현상 교정.
+    out = re.sub(r"right\s+left\s+\|", r"right |", out)
+    out = re.sub(r"left\s+right\s+\|", r"left |", out)
+
     # 7) 괄호 경계 보호 (맨 마지막에 적용)
     #    한글 수식편집기가 `}(` 나 `{(` 패턴에서 `(` 를 빈 그룹 `{}` 로
     #    오인하는 버그 회피. 공백 정리 뒤에 실행해야 보존됨.
@@ -237,22 +244,34 @@ VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확
 이미지에서 **글자 위에 작은 화살표(→)가 있으면 무조건 벡터**.
 **"AP", "BQ" 처럼만 보여도 위에 화살표가 있다면 반드시 `\overrightarrow{\mathrm{AP}}` 로 쓸 것.**
 
-- 점쌍 벡터: `\overrightarrow{\mathrm{AB}}` (화살표 있는 AB)
+#### A) 점쌍 벡터 — 대문자 두 글자 (\overrightarrow)
+- 기본: `\overrightarrow{\mathrm{AB}}` (화살표 있는 AB)
 - 합 벡터: `\overrightarrow{\mathrm{AP}} + \overrightarrow{\mathrm{BQ}}`
 - 첨자 점쌍: `\overrightarrow{\mathrm{O}_{1}\mathrm{P}}` (O 위에 1)
-- 벡터 크기(절댓값): `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
-- 소문자 벡터: `\vec{a}`
-- 영벡터: `\vec{0}`
-- 선분 (선만 있는 경우): `\overline{\mathrm{AB}}`
+- 벡터 크기: `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
+
+#### B) 소문자 벡터 — 1글자 (\vec{}) ⚠️ **점쌍과 구분 필수**
+- 기본: `\vec{a}`, `\vec{b}`, `\vec{p}`, `\vec{u}`, `\vec{v}`, `\vec{x}` (모두 자동으로 이탤릭 처리)
+- 영벡터: `\vec{0}` (숫자 0 은 이탤릭 안 됨)
+- 사칙 연산: `\vec{a}+\vec{b}`, `\vec{a}-\vec{b}`, `k\vec{a}`, `-\vec{a}`
+- 선형 결합: `k\vec{a}+l\vec{b}`
+- 분수 계수: `\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}`
+- 절댓값: `\left|\vec{a}\right|`, `\left|\vec{a}\right|^{2}`, `\left|2\vec{a}\right|` (반드시 `\left|...\right|`)
+- 내적: `\vec{a} \cdot \vec{b}`
+- 좌표: `\vec{a}=(2, -1)`
+
+#### C) 선분/각/삼각형 (화살표 없을 때)
+- 선분: `\overline{\mathrm{AB}}`
 - 점 좌표: `\mathrm{A}(2, 0)`
 - 각: `\angle \mathrm{ABC}`
 - 삼각형: `\triangle \mathrm{ABC}`
 
 ⚠️ **자주 놓치는 실수**:
-- ❌ 이미지에 화살표 있는데 그냥 `AB`, `\mathrm{AB}` 로 인식 (화살표 누락)
-- ✅ 반드시 `\overrightarrow{\mathrm{AB}}` 로
-- ❌ `\vec{AB}` (점쌍에 `\vec` 쓰면 화살표 짧아짐)
-- ✅ `\overrightarrow{\mathrm{AB}}`
+- ❌ 이미지에 화살표 있는데 그냥 `AB`, `\mathrm{AB}` 로 인식 (화살표 누락) → ✅ `\overrightarrow{\mathrm{AB}}`
+- ❌ `\vec{AB}` (점쌍에 `\vec` 쓰면 화살표 짧아짐) → ✅ `\overrightarrow{\mathrm{AB}}`
+- ❌ `\overrightarrow{a}` (소문자에 `\overrightarrow` 쓰지 말 것) → ✅ `\vec{a}`
+- ❌ `\vec a` (중괄호 없음) → ✅ `\vec{a}`
+- ❌ `|\vec{a}|` (절댓값에 일반 `|` 사용) → ✅ `\left|\vec{a}\right|`
 
 ### ④ 비례식은 하나의 수식으로
 - ✅ `$3:1$`, `$1:2:3$`
@@ -262,11 +281,37 @@ VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확
 
 ⚠️ **벡터·분수·근호·합이 들어간 괄호는 반드시 `\left( \right)`** — 일반 `()` 쓰면 한컴에서 크기 조정 안 됨.
 
+#### A) 기본 사용
 - ✅ `\left(\overrightarrow{\mathrm{O}_1\mathrm{P}}+\overrightarrow{\mathrm{O}_3\mathrm{Q}'}\right)`
 - ✅ `\left(\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}\right)`
 - ✅ `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
 - ❌ `(\overrightarrow{\mathrm{O}_1\mathrm{P}}+\overrightarrow{\mathrm{O}_3\mathrm{Q}'})` — 벡터 합인데 `\left( \right)` 안 씀
 - 단, **단순 정수·변수만** 들어가는 경우 (`(2, 0)`, `f(x)`, `(k+1)`) 는 그냥 `()` 도 OK
+
+#### B) `\left/\right` 짝짓기 — 버그 회피 매우 중요
+
+| 구분자 | 여는 쪽 | 닫는 쪽 |
+|------|---------|---------|
+| 소괄호 | `\left(` | `\right)` |
+| 절댓값 | `\left\|` | `\right\|` |
+| 중괄호 | `\left\{` | `\right\}` |
+| 대괄호 | `\left[` | `\right]` |
+
+**작성 규칙 (반드시 지킬 것)**:
+1. `\left` 와 `\right` 는 **항상 1:1 로 짝**. 둘 다 같은 수식 안에.
+2. `\left` / `\right` 직후 **즉시 구분자**가 와야 함 (공백 없이): `\left|`, `\right|`
+3. 짝의 종류 일치: `\left|` ↔ `\right|`, `\left(` ↔ `\right)` (섞으면 안 됨)
+4. 한 수식 안에서 절댓값은 **모두** `\left|/\right|` 로 통일 — 일반 `|` 와 혼용 금지
+
+**잘못된 패턴 (출력이 깨짐)**:
+- ❌ `\left|\vec{a}\right + \left|\vec{b}\right|` — `\right` 뒤 `|` 빠뜨림
+- ❌ `\left|\vec{a}\right\left|\vec{b}\right|` — `\right\left` 사이에 내용 없음
+- ❌ `|\vec{a}|+\left|\vec{b}\right|` — 일반 `|` 와 `\left/\right` 혼용
+
+**올바른 패턴**:
+- ✅ `\left|\vec{a}\right|+\left|\vec{b}\right|+\left|\vec{c}\right|`
+- ✅ `\left|\overrightarrow{\mathrm{AD}}\right|+\left|\overrightarrow{\mathrm{BE}}\right|`
+- ✅ `\left|\vec{a}\right|=4+2\times\left(4-2\sqrt{2}\right)`
 
 ### ⑥ LaTeX 공백 명령 금지
 - ❌ `\;`, `\,`, `\:`, `\!`, `\quad`, `\qquad` 모두 금지
@@ -419,18 +464,31 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 ### ③ 벡터/선분/점쌍은 \mathrm 필수 ⚠️ **매우 중요**
 
 이미지/원문에서 **글자 위에 화살표(→)가 있는 것은 무조건 벡터**.
-입력 텍스트에서 `AP`, `BQ`, `\mathrm{AP}+\mathrm{BQ}` 같이 보여도 **벡터 컨텍스트**라면 반드시 화살표 추가:
 
-- 점쌍 벡터: `\overrightarrow{\mathrm{AB}}` (절대 `\mathrm{AB}` 만 쓰지 말 것)
+#### A) 점쌍 벡터 (대문자 두 글자 이상) — `\overrightarrow{\mathrm{}}`
+- 기본: `\overrightarrow{\mathrm{AB}}` (절대 `\mathrm{AB}` 만 쓰지 말 것)
 - 첨자 점쌍: `\overrightarrow{\mathrm{O}_{1}\mathrm{P}}`
+- 벡터 합: `\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}`
 - 벡터 크기: `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
-- 소문자 벡터: `\vec{a}`
+
+#### B) 소문자 벡터 (1글자) — `\vec{}`
+- 기본: `\vec{a}`, `\vec{b}`, `\vec{p}`, `\vec{v}`, `\vec{x}`
+- 영벡터: `\vec{0}` (0은 이탤릭 안 됨)
+- 사칙: `\vec{a}+\vec{b}`, `k\vec{a}+l\vec{b}`, `\dfrac{1}{2}\vec{a}-\dfrac{2}{3}\vec{b}`
+- 절댓값: `\left|\vec{a}\right|` (일반 `|` 금지)
+- 내적: `\vec{a} \cdot \vec{b}`
+
+#### C) 기타
 - 선분 (화살표 없을 때만): `\overline{\mathrm{AB}}`
 - 각: `\angle \mathrm{ABC}`
 - 삼각형: `\triangle \mathrm{ABC}`
 - 점 좌표: `\mathrm{A}(2, 0)` (점 이름인데 `\mathrm` 누락 금지)
 
-⚠️ Vision 출력에 화살표 표기가 누락되어 있어도, **벡터 합산식이나 벡터 절댓값 등 벡터 표현이 명백한 컨텍스트라면 `\overrightarrow{}` 를 명시적으로 추가**할 것.
+⚠️ **흔한 실수**:
+- ❌ `\overrightarrow{a}` (소문자에 `\overrightarrow`) → ✅ `\vec{a}`
+- ❌ `\vec{AB}` (점쌍에 `\vec`) → ✅ `\overrightarrow{\mathrm{AB}}`
+- ❌ `\vec a` (중괄호 없음) → ✅ `\vec{a}`
+- Vision 출력에 화살표 누락돼도, **벡터 컨텍스트면 `\overrightarrow{}`/`\vec{}` 명시적 추가**
 
 ### ④ 비례식은 무조건 하나의 formula
 - ✅ `{"type":"formula","content":"3:1"}`
@@ -444,6 +502,16 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 - ✅ `\left|\overrightarrow{\mathrm{AP}}+\overrightarrow{\mathrm{BQ}}\right|`
 - ❌ `(\overrightarrow{X}+\overrightarrow{Y})` ← 벡터인데 그냥 `()`
 - 단순 정수·변수만 (`(2, 0)`, `f(x)`) 는 그냥 `()` 도 OK
+
+#### `\left/\right` 짝짓기 규칙 — 깨짐 방지
+1. `\left` 와 `\right` 는 **1:1 짝**, 항상 같은 수식 안에
+2. 직후에 구분자 즉시: `\left|`, `\right|`, `\left(`, `\right)` (공백 없이)
+3. 짝 종류 일치: `\left| ↔ \right|`, `\left( ↔ \right)`
+4. 일반 `|` 와 `\left|/\right|` 혼용 금지 — 한 수식 안에서 통일
+
+❌ `\left|\vec{a}\right + \left|\vec{b}\right|` (right 뒤 `|` 빠뜨림)
+❌ `|\vec{a}|+\left|\vec{b}\right|` (혼용)
+✅ `\left|\vec{a}\right|+\left|\vec{b}\right|+\left|\vec{c}\right|`
 
 ### ⑥ LaTeX 공백 명령 금지
 - ❌ `\;`, `\,`, `\:`, `\!`, `\quad`, `\qquad`
