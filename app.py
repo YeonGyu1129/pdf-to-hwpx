@@ -137,7 +137,7 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     # 6) 여분의 공백 정리
     out = re.sub(r" +", " ", out).strip()
 
-    # 6-b) `vec rm{X}` → `vec{rm X}` 형태로 그룹화
+    # 6-b) `vec rm{X}` / `vec it{X}` 형태로 그룹화
     #     한컴 수식편집기에서 vec 명령은 인자가 {...} 그룹 형태여야 화살표가 위에 정상 표시됨.
     #     skill 변환기가 `vec rm{X}` 로 출력하면 한컴이 `{vec{rm}} rm X` 로 잘못 해석.
     # 6-b-1) 첨자 점쌍 (vec rm{X}_{n}rm{Y} ['|prime]?)
@@ -152,10 +152,18 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
         lambda m: f"vec{{rm {m.group(1)} {m.group(2)}{m.group(3) or ''}}}",
         out,
     )
-    # 6-b-3) 단순한 경우 (vec rm{X} ['|prime]?)
+    # 6-b-3) 단순한 점쌍 (vec rm{X} ['|prime]?)
     out = re.sub(
         r"vec rm\{([^{}]+)\}(\s*'\s*|\s+prime\s*)?",
         lambda m: f"vec{{rm {m.group(1)}{m.group(2) or ''}}}",
+        out,
+    )
+    # 6-b-4) 소문자 벡터 (vec it{X} → {vec{it X}})
+    #     한컴이 `vec it{a}` 를 `{vec{it}} it a` 로 잘못 해석.
+    #     `{vec{it a}}` 형태로 외부 그룹 추가해 a 까지 vec 인자에 포함시킴.
+    out = re.sub(
+        r"vec it\{([^{}]+)\}",
+        lambda m: f"{{vec{{it {m.group(1)}}}}}",
         out,
     )
 
@@ -1030,6 +1038,10 @@ def _auto_mathrm(latex: str) -> str:
     s = re.sub(r"\\overrightarrow\b", r"\\vec", s)
     s = re.sub(r"\\overleftarrow\b", r"\\vec", s)
     s = re.sub(r"\\overleftrightarrow\b", r"\\vec", s)
+
+    # 0-g) 소문자 변수 + \vec 사이 공백 강제 (스칼라 곱 m\vec{a} 처리)
+    #     m\vec{a} → m \vec{a}  : 후처리에서 m 이 단일 소문자로 인식되어 it{m} 변환되도록
+    s = re.sub(r"([a-z])(?=\\vec\b)", r"\1 ", s)
 
     # 0-b) 그리스문자 + 아래첨자 버그 회피
     #     \alpha_1 → \alpha _1 (skill 변환기가 \alpha 를 삼키는 버그)
