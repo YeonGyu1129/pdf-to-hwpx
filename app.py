@@ -66,6 +66,21 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
 
     latex = re.sub(r"\\mathit\{([^{}]+)\}", _save_mathit, latex)
 
+    # 호(arc) 표기 사전 보호 — skill 변환기가 인식 못 함
+    # \widehat{X}, \overset{\frown}{X}, \overarc{X} → 모두 한컴의 arch 로
+    _arc_placeholders: list[str] = []
+
+    def _save_arc(m: re.Match) -> str:
+        idx = len(_arc_placeholders)
+        _arc_placeholders.append(m.group(1))
+        return f"\x02{idx}\x02"
+
+    # 1단계 중첩 중괄호까지 허용: \widehat{\mathrm{AB}} 같은 경우 처리
+    _arc_arg = r"((?:[^{}]|\{[^{}]*\})+)"
+    latex = re.sub(rf"\\widehat\{{{_arc_arg}\}}", _save_arc, latex)
+    latex = re.sub(rf"\\overset\{{\\frown\}}\{{{_arc_arg}\}}", _save_arc, latex)
+    latex = re.sub(rf"\\overarc\{{{_arc_arg}\}}", _save_arc, latex)
+
     out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
 
     # 보호된 \mathit 복원 → it{X}
@@ -74,6 +89,18 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
         lambda m: f"it{{{_mathit_placeholders[int(m.group(1))]}}}",
         out,
     )
+
+    # 보호된 호(arc) 복원 → {arch{...}}
+    def _restore_arc(m: re.Match) -> str:
+        content = _arc_placeholders[int(m.group(1))]
+        # \mathrm{X} → rm X 로 변환
+        content = re.sub(r"\\mathrm\{([^{}]+)\}", r"rm \1", content)
+        # 단순 대문자만이면 자동 rm 적용
+        if re.fullmatch(r"[A-Z]+", content):
+            content = f"rm {content}"
+        return f"{{arch{{{content}}}}}"
+
+    out = re.sub(r"\x02(\d+)\x02", _restore_arc, out)
 
     # 1) "X" → rm{X}  (따옴표는 mathrm 변환에서만 나오는 것으로 가정)
     out = re.sub(r'"([^"]+)"', r"rm{\1}", out)
@@ -174,6 +201,10 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     out = re.sub(r"right\s+left\s+\|", r"right |", out)
     out = re.sub(r"left\s+right\s+\|", r"left |", out)
 
+    # 6-d) THEREFORE / BECAUSE 뒤 `~` 띄어쓰기 (한컴 명시적 공백 기호)
+    out = re.sub(r"\bTHEREFORE\b\s*", "THEREFORE~ ", out)
+    out = re.sub(r"\bBECAUSE\b\s*", "BECAUSE~ ", out)
+
     # 7) 괄호 경계 보호 (맨 마지막에 적용)
     #    한글 수식편집기가 `}(` 나 `{(` 패턴에서 `(` 를 빈 그룹 `{}` 로
     #    오인하는 버그 회피. 공백 정리 뒤에 실행해야 보존됨.
@@ -268,11 +299,12 @@ VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확
 - 내적: `\vec{a} \cdot \vec{b}`
 - 좌표: `\vec{a}=(2, -1)`
 
-#### C) 선분/각/삼각형 (화살표 없을 때)
+#### C) 선분/각/삼각형/호 (화살표 없을 때)
 - 선분: `\overline{\mathrm{AB}}`
 - 점 좌표: `\mathrm{A}(2, 0)`
 - 각: `\angle \mathrm{ABC}`
 - 삼각형: `\triangle \mathrm{ABC}`
+- **호**: `\widehat{\mathrm{AB}}` (글자 위 둥근 호 ⌒ — 자동으로 `{arch{rm AB}}` 변환)
 
 ⚠️ **자주 놓치는 실수**:
 - ❌ 이미지에 화살표 있는데 그냥 `AB`, `\mathrm{AB}` 로 인식 (화살표 누락) → ✅ `\overrightarrow{\mathrm{AB}}`
@@ -488,6 +520,7 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 
 #### C) 기타
 - 선분 (화살표 없을 때만): `\overline{\mathrm{AB}}`
+- 호: `\widehat{\mathrm{AB}}` (글자 위 둥근 호)
 - 각: `\angle \mathrm{ABC}`
 - 삼각형: `\triangle \mathrm{ABC}`
 - 점 좌표: `\mathrm{A}(2, 0)` (점 이름인데 `\mathrm` 누락 금지)
