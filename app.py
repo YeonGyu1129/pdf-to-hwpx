@@ -216,31 +216,188 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
 pdf_to_hwpx.latex_to_hwpeq = _patched_latex_to_hwpeq
 
 # ────────────────────────────────────────────────────────────
-# make_section_xml 출력 보정 (monkey-patch)
+# make_section_xml 재구현 (monkey-patch)
 # ────────────────────────────────────────────────────────────
-# pdf_to_hwpx.make_section_xml 은 problem 마다 trailing empty paragraph 를
-# 1개씩 무조건 덧붙여 (pdf_to_hwpx.py:934-941) 같은 문제의 풀이 여러 줄이
-# 별개 problem 으로 들어오면 줄과 줄 사이에 빈 줄이 보이는 문제를 만든다.
-# 여기서는 출력 XML 에서 그 빈 문단만 정확히 골라 제거한다.
-# insert_problem_gaps 가 만든 dummy 문단은 <hp:t> </hp:t> 를 포함하므로 매치되지 않음.
-
-_TRAILING_EMPTY_P_RE = re.compile(
-    r'\n<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
-    r'pageBreak="0" columnBreak="0" merged="0">'
-    r'<hp:run charPrIDRef="0"/>'  # self-closing run = 본문이 없는 빈 문단 표식
-    r'<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" '
-    r'textheight="1000" baseline="850" spacing="600" horzpos="0" '
-    r'horzsize="42520" flags="393216"/></hp:linesegarray>'
-    r'</hp:p>'
-)
+# 원본 pdf_to_hwpx.make_section_xml 은 (1) problem 마다 빈 줄을 1개씩 강제로
+# 덧붙이고 (2) 미주(endnote)를 지원하지 않는다. 원본은 "외부 스킬" 이라 직접
+# 수정하지 않고, 여기서 동일 동작 + 두 가지 개선을 적용한 버전으로 교체한다.
+#   - 개선 1: problem 마다 붙던 trailing empty 문단 제거 (풀이 줄 사이 빈 줄 방지)
+#   - 개선 2: role=='solution' 엔트리를 미주로 렌더링 (문제 번호로 매칭)
+# 헬퍼는 pdf_to_hwpx 모듈의 내부 함수를 그대로 재사용한다.
 
 if not hasattr(pdf_to_hwpx, "_original_make_section_xml"):
     pdf_to_hwpx._original_make_section_xml = pdf_to_hwpx.make_section_xml
 
 
+def _en_base(prob: dict) -> str:
+    """problem number 앞 숫자만 추출 (미주↔문제 매칭). '3-①' → '3'."""
+    m = re.match(r"^\s*(\d+)", str(prob.get("number", "")))
+    return m.group(1) if m else ""
+
+
+def _en_subpara(segments: list, eq_id: int, autonum_n=None) -> tuple:
+    """미주 subList 안 문단 1개 생성. autonum_n 주어지면 앞에 미주번호 마커 삽입.
+    pdf_to_hwpx._para_from_segments 를 재사용해 수식 렌더링 로직을 공유한다."""
+    para_xml, used, _ = pdf_to_hwpx._para_from_segments(
+        segments or [{"type": "text", "content": ""}], eq_id
+    )
+    if autonum_n is not None:
+        ctrl = (
+            f'<hp:ctrl><hp:autoNum num="{autonum_n}" numType="ENDNOTE">'
+            f'<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" '
+            f'suffixChar=")" supscript="0"/></hp:autoNum></hp:ctrl><hp:t> </hp:t>'
+        )
+        para_xml = para_xml.replace(
+            '<hp:run charPrIDRef="0">', '<hp:run charPrIDRef="0">' + ctrl, 1
+        )
+    return para_xml, used
+
+
+def _en_make_endnote(sol_entries: list, eq_id: int, num: int, inst_id: int) -> tuple:
+    """풀이 엔트리 리스트 → <hp:endNote> XML. 반환 (xml, 사용 eq_id 수)."""
+    eid = eq_id
+    paras = []
+    for i, entry in enumerate(sol_entries):
+        p, used = _en_subpara(entry.get("segments", []) or [], eid,
+                              autonum_n=num if i == 0 else None)
+        eid += used
+        paras.append(p)
+    if not paras:
+        p, used = _en_subpara([], eid, autonum_n=num)
+        eid += used
+        paras.append(p)
+    sublist = (
+        '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
+        'vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" '
+        'textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">'
+        + "".join(paras) +
+        "</hp:subList>"
+    )
+    xml = (
+        f'<hp:endNote number="{num}" suffixChar="41" instId="{inst_id}">'
+        + sublist +
+        "</hp:endNote>"
+    )
+    return xml, eid - eq_id
+
+
 def _patched_make_section_xml(problems: list) -> str:
-    xml = pdf_to_hwpx._original_make_section_xml(problems)
-    return _TRAILING_EMPTY_P_RE.sub("", xml)
+    P = pdf_to_hwpx
+    NS = (
+        'xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" '
+        'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" '
+        'xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" '
+        'xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" '
+        'xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" '
+        'xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" '
+        'xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" '
+        'xmlns:opf="http://www.idpf.org/2007/opf/"'
+    )
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>',
+        f'<hs:sec {NS}>',
+        '<hp:p id="1" paraPrIDRef="0" styleIDRef="0" '
+        'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="0">{P._SECPR}</hp:run>'
+        '<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" '
+        'textheight="1000" baseline="850" spacing="600" horzpos="0" '
+        'horzsize="42520" flags="393216"/></hp:linesegarray>'
+        '</hp:p>',
+    ]
+
+    eq_id = 1000
+
+    # ── 미주 준비: role=='solution' 분리 + base 번호별 그룹 ──
+    solutions_by_base: dict = {}
+    body_problems: list = []
+    for prob in problems:
+        if isinstance(prob, dict) and prob.get("role") == "solution":
+            solutions_by_base.setdefault(_en_base(prob), []).append(prob)
+        else:
+            body_problems.append(prob)
+    endnote_done: set = set()
+    endnote_num = 0
+    inst_seq = 1800000000
+
+    def _attach(para_xml: str, base: str) -> str:
+        nonlocal eq_id, endnote_num, inst_seq
+        if (not base) or base in endnote_done or base not in solutions_by_base:
+            return para_xml
+        endnote_num += 1
+        inst_seq += 1
+        en_xml, used = _en_make_endnote(
+            solutions_by_base[base], eq_id, endnote_num, inst_seq)
+        eq_id += used
+        endnote_done.add(base)
+        return para_xml.replace("</hp:run>", en_xml + "</hp:run>", 1)
+
+    for p_idx, prob in enumerate(body_problems):
+        segments = prob.get("segments", [])
+
+        if prob.get("type") == "image":
+            lines.append(P.make_image_para(
+                bin_name=prob["bin_name"],
+                org_w=prob.get("org_w", 800),
+                org_h=prob.get("org_h", 600),
+                display_w=prob.get("display_w", None),
+                display_h=prob.get("display_h", None),
+                pic_id=eq_id + 8000,
+            ))
+            continue
+
+        is_box = prob.get("box", False)
+        prefix = ""  # 원본과 동일하게 prefix 없음
+
+        if not segments:
+            text = str(prob.get("text", ""))
+            formulas = prob.get("formulas_hwpeq") or [
+                P.latex_to_hwpeq(f) for f in prob.get("formulas", [])
+            ]
+            segments = [{"type": "text", "content": prefix + text}]
+            for f in formulas:
+                segments.append({"type": "formula", "content": f})
+            para_xml, used, _ = P._para_from_segments(segments, eq_id)
+            eq_id += used
+            lines.append(_attach(para_xml, _en_base(prob)))
+
+        elif is_box:
+            rows = [list(r) for r in segments]
+            if rows and rows[0] and isinstance(rows[0][0], dict) and rows[0][0].get("type") == "text":
+                rows[0] = [{"type": "text", "content": prefix + rows[0][0]["content"]}] + rows[0][1:]
+            else:
+                rows[0] = [{"type": "text", "content": prefix}] + rows[0]
+            box_xml, used = P.make_box_xml(rows, eq_id, box_type=prob.get("box_type", "condition"))
+            eq_id += used
+            lines.append(box_xml)
+
+        else:
+            if segments[0].get("type") == "text":
+                segments = [{"type": "text", "content": prefix + segments[0]["content"]}] + segments[1:]
+            else:
+                segments = [{"type": "text", "content": prefix}] + segments
+            para_xml, used, _ = P._para_from_segments(segments, eq_id)
+            eq_id += used
+            lines.append(_attach(para_xml, _en_base(prob)))
+
+    # 본문에 못 붙인 미주(대응 문단 없음) → 문서 끝 단독 문단으로
+    for base, sols in solutions_by_base.items():
+        if base in endnote_done:
+            continue
+        endnote_num += 1
+        inst_seq += 1
+        en_xml, used = _en_make_endnote(sols, eq_id, endnote_num, inst_seq)
+        eq_id += used
+        endnote_done.add(base)
+        lines.append(
+            '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+            'pageBreak="0" columnBreak="0" merged="0">'
+            f'<hp:run charPrIDRef="0">{en_xml}</hp:run>'
+            f'{P._lineseg(1000)}'
+            '</hp:p>'
+        )
+
+    lines.append("</hs:sec>")
+    return "\n".join(lines)
 
 
 pdf_to_hwpx.make_section_xml = _patched_make_section_xml
@@ -550,6 +707,30 @@ STRUCT_SCOPE_ALL = r"""## ⚠️ 변환 범위 — 모든 내용
 - 원본의 순서와 구조를 유지하면서 segments 로 분해
 - 손글씨 필기·주석도 모두 포함"""
 
+# 미주(endnote) 모드 — '보이는 것 모두' + 토글 ON 일 때만 프롬프트에 추가
+STRUCT_ENDNOTE_INSTRUCTION = r"""
+
+## 🔖 풀이 → 미주(endnote) 처리 (특수 모드 ON)
+풀이·해설·답·정답 설명에 해당하는 내용은 **일반 problem 이 아니라 미주 엔트리**로 출력하세요.
+
+### 미주 엔트리 형식
+```
+{"number": "<설명 대상 문제 번호>", "role": "solution", "segments": [ ... ]}
+```
+- `role` 은 반드시 `"solution"` 으로.
+- `number` 는 그 풀이가 **설명하는 문제의 번호**와 동일하게. (예: 3번 문제의 풀이 → `"3"`)
+- 풀이가 여러 줄이면 **줄마다 별도 엔트리**로 (모두 같은 number, 같은 role:"solution").
+- segments 분해 규칙(text/formula)은 일반 문단과 동일.
+
+### 본문 vs 풀이 구분
+- 문제 본문·객관식 보기·조건 박스 → 기존대로 일반 엔트리(`main:true`/`main:false`/`box`).
+- "풀이", "해설", "[정답]", "답:", "Sol)" 등으로 시작하거나 그 뒤에 오는 계산 과정 → `role:"solution"`.
+- 풀이 엔트리는 본문 엔트리보다 **뒤에 배치**해도 됩니다. number 로 자동 매칭됩니다.
+
+### 주의
+- 풀이 내용을 일반 문단(main)으로 잘못 출력하면 본문에 그대로 찍혀버립니다. 반드시 `role:"solution"` 으로.
+- 어떤 문제의 풀이인지 번호가 불명확하면, 가장 가까운(직전) 문제 번호로 매칭하세요."""
+
 STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 변환하세요.
 
 {SCOPE_SECTION}
@@ -824,10 +1005,14 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 """
 
 
-def build_struct_prompt(mode: str) -> str:
-    """모드별 Struct 프롬프트 생성. mode: 'problems_only' | 'all'"""
+def build_struct_prompt(mode: str, endnote: bool = False) -> str:
+    """모드별 Struct 프롬프트 생성. mode: 'problems_only' | 'all'
+    endnote=True 이고 mode=='all' 이면 풀이를 미주로 출력하라는 지시를 덧붙인다."""
     scope = STRUCT_SCOPE_ALL if mode == "all" else STRUCT_SCOPE_PROBLEMS_ONLY
-    return STRUCT_PROMPT_TEMPLATE.replace("{SCOPE_SECTION}", scope)
+    prompt = STRUCT_PROMPT_TEMPLATE.replace("{SCOPE_SECTION}", scope)
+    if endnote and mode == "all":
+        prompt += STRUCT_ENDNOTE_INSTRUCTION
+    return prompt
 
 
 # ────────────────────────────────────────────────────────────
@@ -991,12 +1176,13 @@ def structure_single(
     raw_text: str,
     max_tokens: int = STRUCT_MAX_TOKENS,
     mode: str = "problems_only",
+    endnote: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     페이지 하나의 평문을 JSON 으로 구조화.
     반환: (problems, truncated) — truncated 는 응답이 잘렸는지 여부.
     """
-    prompt = build_struct_prompt(mode)
+    prompt = build_struct_prompt(mode, endnote=endnote)
     resp = client.messages.create(
         model=EXTRACT_MODEL,
         max_tokens=max_tokens,
@@ -1033,10 +1219,22 @@ def _split_page_text(raw_text: str) -> list[str]:
     return ["\n".join(lines[:mid_idx]), "\n".join(lines[mid_idx:])]
 
 
+def _spacing_keep_solutions(cleaned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """문제 사이 빈 줄 삽입은 본문 엔트리에만 적용하고, 미주(role=='solution')
+    엔트리는 분리해 끝에 그대로 붙인다. (미주 엔트리 사이에 gap dummy 가 끼어
+    본문에 빈 줄로 새는 것을 방지; 미주는 빌더에서 번호로 매칭됨)"""
+    body = [p for p in cleaned
+            if not (isinstance(p, dict) and p.get("role") == "solution")]
+    sols = [p for p in cleaned
+            if isinstance(p, dict) and p.get("role") == "solution"]
+    return _insert_problem_spacing(body) + sols
+
+
 def structure_problems(
     client: Anthropic,
     raw_texts: list[str],
     mode: str = "problems_only",
+    endnote: bool = False,
 ) -> list[dict[str, Any]]:
     """
     페이지별로 따로 구조화한 뒤 하나의 problems 리스트로 병합.
@@ -1050,7 +1248,8 @@ def structure_problems(
         if not page_text.strip():
             continue
         try:
-            page_problems, truncated = structure_single(client, page_text, mode=mode)
+            page_problems, truncated = structure_single(
+                client, page_text, mode=mode, endnote=endnote)
         except json.JSONDecodeError as e:
             st.warning(f"페이지 {idx} 구조화 실패: {e}. 재시도 중…")
             truncated = True
@@ -1064,7 +1263,8 @@ def structure_problems(
                 if not chunk.strip():
                     continue
                 try:
-                    chunk_probs, _ = structure_single(client, chunk, mode=mode)
+                    chunk_probs, _ = structure_single(
+                        client, chunk, mode=mode, endnote=endnote)
                     recovered.extend(chunk_probs)
                 except json.JSONDecodeError:
                     continue
@@ -1076,7 +1276,7 @@ def structure_problems(
 
     progress.progress(1.0, text="문제 구조화 완료")
     cleaned = sanitize_problems(all_problems)
-    return _insert_problem_spacing(cleaned)
+    return _spacing_keep_solutions(cleaned)
 
 
 # ════════════════════════════════════════════════════════════
@@ -1238,6 +1438,7 @@ def regenerate_with_feedback(
     raw_texts: list[str],
     verification: dict[str, Any],
     mode: str = "problems_only",
+    endnote: bool = False,
 ) -> list[dict[str, Any]]:
     """검수 피드백을 반영해 problems 재생성."""
     feedback = _verification_to_feedback(verification)
@@ -1252,13 +1453,14 @@ def regenerate_with_feedback(
         # 피드백을 입력 텍스트 앞에 추가
         augmented_text = feedback + "\n\n## 원본 입력 텍스트\n" + page_text
         try:
-            page_problems, _ = structure_single(client, augmented_text, mode=mode)
+            page_problems, _ = structure_single(
+                client, augmented_text, mode=mode, endnote=endnote)
         except json.JSONDecodeError:
             continue
         all_problems.extend(page_problems)
     progress.progress(1.0, text="재변환 완료")
     cleaned = sanitize_problems(all_problems)
-    return _insert_problem_spacing(cleaned)
+    return _spacing_keep_solutions(cleaned)
 
 
 def _auto_mathrm(latex: str) -> str:
@@ -1682,6 +1884,21 @@ def main() -> None:
         )
         extract_mode = "problems_only" if extract_mode_label == "문제만" else "all"
 
+        # 풀이를 미주(endnote)로 처리 — '보이는 것 모두' 모드에서만 의미 있음
+        endnote_toggle = st.checkbox(
+            "🔖 풀이를 미주로 처리",
+            value=False,
+            disabled=(extract_mode != "all"),
+            help=(
+                "켜면 풀이·해설·답을 본문에 펼치지 않고, 해당 문제 뒤에 미주 번호"
+                "(1) 2) …)로 달고 내용은 문서 맨 끝에 모아 표시합니다.\n"
+                "'보이는 것 모두' 모드에서만 동작합니다."
+            ),
+        )
+        endnote = endnote_toggle and extract_mode == "all"
+        if endnote_toggle and extract_mode != "all":
+            st.caption("⚠️ 미주 처리는 '보이는 것 모두' 모드에서만 적용됩니다.")
+
         # 정확도 프리셋
         accuracy_label = st.radio(
             "🎚️ 정확도 레벨",
@@ -1850,7 +2067,8 @@ def main() -> None:
         # 4) 구조화 (페이지별로 나눠 호출 → 병합)
         with st.status("문제 구조화 중…", expanded=False) as status:
             try:
-                problems = structure_problems(client, raw_texts, mode=extract_mode)
+                problems = structure_problems(
+                    client, raw_texts, mode=extract_mode, endnote=endnote)
             except json.JSONDecodeError as e:
                 status.update(label="JSON 파싱 실패", state="error")
                 st.exception(e)
@@ -1895,7 +2113,8 @@ def main() -> None:
                 )
                 with st.status("검수 결과 반영 재변환 중…", expanded=False) as status:
                     problems = regenerate_with_feedback(
-                        client, raw_texts, verification, mode=extract_mode
+                        client, raw_texts, verification,
+                        mode=extract_mode, endnote=endnote
                     )
                     status.update(label="재변환 완료", state="complete")
 

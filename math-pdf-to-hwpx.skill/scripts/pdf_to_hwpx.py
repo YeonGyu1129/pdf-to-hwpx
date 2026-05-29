@@ -827,6 +827,84 @@ def make_box_xml(rows_segments: list, eq_id_start: int,
         return full_p, eid - eq_id_start
 
 
+# ══════════════════════════════════════════════════════════
+# 6-2. 미주(endnote) 생성
+# ══════════════════════════════════════════════════════════
+
+def _solution_base(prob: dict) -> str:
+    """problem 의 number 앞 숫자만 추출 (미주 매칭용). 예: '3-①' → '3'."""
+    m = re.match(r"^\s*(\d+)", str(prob.get("number", "")))
+    return m.group(1) if m else ""
+
+
+def _endnote_subpara(segments: list, eq_id: int, autonum_n=None) -> tuple:
+    """
+    미주 subList 안의 문단 1개 생성.
+    autonum_n 이 주어지면 그 문단 맨 앞에 미주 번호(autoNum) 마커를 넣는다.
+    반환: (xml, 사용된 eq_id 수)
+    """
+    eid = eq_id
+    parts = []
+    max_h = 1100
+    if autonum_n is not None:
+        parts.append(
+            f'<hp:ctrl><hp:autoNum num="{autonum_n}" numType="ENDNOTE">'
+            f'<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" '
+            f'suffixChar=")" supscript="0"/></hp:autoNum></hp:ctrl><hp:t> </hp:t>'
+        )
+    for seg in segments:
+        if seg.get('type') == 'text':
+            txt = _xt(seg['content'])
+            if txt:
+                parts.append(f'<hp:t>{txt}</hp:t>')
+        else:
+            hwpeq = latex_to_hwpeq(seg['content'])
+            _, h, _ = estimate_eq_size(hwpeq)
+            max_h = max(max_h, h)
+            parts.append(_eq_block(eid, hwpeq))
+            eid += 1
+    xml = (
+        f'<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+        f'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="0">{"".join(parts)}</hp:run>'
+        f'{_lineseg(max_h)}'
+        f'</hp:p>'
+    )
+    return xml, eid - eq_id
+
+
+def make_endnote_xml(sol_entries: list, eq_id: int, num: int, inst_id: int) -> tuple:
+    """
+    풀이 엔트리 리스트 → <hp:endNote> XML.
+    본문에 인라인 삽입되는 마커 + 문서 끝에 표시될 풀이 내용(subList)을 함께 담는다.
+    반환: (xml, 사용된 eq_id 수)
+    """
+    eid = eq_id
+    paras = []
+    for i, entry in enumerate(sol_entries):
+        segs = entry.get('segments', []) or []
+        p, used = _endnote_subpara(segs, eid, autonum_n=num if i == 0 else None)
+        eid += used
+        paras.append(p)
+    if not paras:  # 안전망: 내용 없으면 빈 마커 문단 1개
+        p, used = _endnote_subpara([], eid, autonum_n=num)
+        eid += used
+        paras.append(p)
+    sublist = (
+        '<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
+        'vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" '
+        'textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">'
+        + ''.join(paras) +
+        '</hp:subList>'
+    )
+    xml = (
+        f'<hp:endNote number="{num}" suffixChar="41" instId="{inst_id}">'
+        + sublist +
+        '</hp:endNote>'
+    )
+    return xml, eid - eq_id
+
+
 def make_section_xml(problems: list) -> str:
     NS = (
         'xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" '
@@ -858,7 +936,35 @@ def make_section_xml(problems: list) -> str:
                '㉑','㉒','㉓','㉔','㉕','㉖','㉗','㉘','㉙','㉚']
     circled_idx = 0
 
-    for p_idx, prob in enumerate(problems):
+    # ── 미주(endnote) 준비 ──
+    # role=='solution' 엔트리를 본문에서 분리하고 문제 번호(base)별로 모음.
+    # 본문 첫 문단에 미주 마커를 인라인 삽입하고, 풀이 내용은 문서 끝(subList)에 표시.
+    solutions_by_base: dict = {}
+    body_problems: list = []
+    for prob in problems:
+        if isinstance(prob, dict) and prob.get('role') == 'solution':
+            solutions_by_base.setdefault(_solution_base(prob), []).append(prob)
+        else:
+            body_problems.append(prob)
+    endnote_done = set()   # 이미 미주를 붙인 base
+    endnote_num = 0        # 미주 일련번호 (1-base)
+    inst_seq = 1800000000  # endNote instId 시드
+
+    def _attach_endnote(para_xml: str, base: str) -> str:
+        """para_xml(단일 run 문단)의 run 끝에 base 에 해당하는 미주를 인라인 삽입."""
+        nonlocal eq_id, endnote_num, inst_seq
+        if (not base) or base in endnote_done or base not in solutions_by_base:
+            return para_xml
+        endnote_num += 1
+        inst_seq += 1
+        en_xml, used = make_endnote_xml(
+            solutions_by_base[base], eq_id, endnote_num, inst_seq)
+        eq_id += used
+        endnote_done.add(base)
+        # 단일 run 문단의 첫 </hp:run> 직전에 삽입 (= 본문 텍스트 맨 뒤 마커)
+        return para_xml.replace('</hp:run>', en_xml + '</hp:run>', 1)
+
+    for p_idx, prob in enumerate(body_problems):
         num      = prob.get('number', p_idx + 1)
         segments = prob.get('segments', [])
 
@@ -898,6 +1004,7 @@ def make_section_xml(problems: list) -> str:
                 segments.append({'type': 'formula', 'content': f})
             para_xml, used, _ = _para_from_segments(segments, eq_id)
             eq_id += used
+            para_xml = _attach_endnote(para_xml, _solution_base(prob))
             lines.append(para_xml)
 
         elif is_box:
@@ -924,12 +1031,31 @@ def make_section_xml(problems: list) -> str:
                 segments = [{'type': 'text', 'content': prefix}] + segments
             para_xml, used, _ = _para_from_segments(segments, eq_id)
             eq_id += used
+            para_xml = _attach_endnote(para_xml, _solution_base(prob))
             lines.append(para_xml)
 
         # (이전에는 problem 마다 빈 줄을 1개씩 append 했으나, 같은 문제의 풀이
         # 여러 줄이 별개 problem 으로 들어올 때 줄과 줄 사이에 빈 줄이 보이는
         # 문제가 있어 제거함. 문제 사이 간격은 insert_problem_gaps 의
         # dummy 문단이 처리.)
+
+    # ── 본문에 붙지 못한 미주 처리 (안전망) ──
+    # 대응하는 본문 문단(일반 문단)을 못 찾은 풀이는 문서 끝에 단독 문단으로 미주 삽입.
+    for base, sols in solutions_by_base.items():
+        if base in endnote_done:
+            continue
+        endnote_num += 1
+        inst_seq += 1
+        en_xml, used = make_endnote_xml(sols, eq_id, endnote_num, inst_seq)
+        eq_id += used
+        endnote_done.add(base)
+        lines.append(
+            '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+            'pageBreak="0" columnBreak="0" merged="0">'
+            f'<hp:run charPrIDRef="0">{en_xml}</hp:run>'
+            f'{_lineseg(1000)}'
+            '</hp:p>'
+        )
 
     lines.append('</hs:sec>')
     return '\n'.join(lines)

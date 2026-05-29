@@ -515,7 +515,13 @@ def convert_problems_to_hwpx(
         output_path (성공 시)
     """
     cleaned = sanitize_problems(problems)
-    cleaned = _insert_problem_spacing(cleaned)
+    # 미주(role=='solution') 엔트리는 문제 간 빈 줄 삽입 대상에서 제외하고 끝에 재배치.
+    # (미주 엔트리 사이에 gap dummy 가 끼면 본문에 빈 줄로 새기 때문)
+    body = [p for p in cleaned
+            if not (isinstance(p, dict) and p.get("role") == "solution")]
+    sols = [p for p in cleaned
+            if isinstance(p, dict) and p.get("role") == "solution"]
+    cleaned = _insert_problem_spacing(body) + sols
     pdf_to_hwpx.build_hwpx(
         template_path=str(template_path),
         output_path=str(output_path),
