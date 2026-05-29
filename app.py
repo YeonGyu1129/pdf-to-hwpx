@@ -237,20 +237,46 @@ def _en_base(prob: dict) -> str:
 
 def _en_subpara(segments: list, eq_id: int, autonum_n=None) -> tuple:
     """미주 subList 안 문단 1개 생성. autonum_n 주어지면 앞에 미주번호 마커 삽입.
-    pdf_to_hwpx._para_from_segments 를 재사용해 수식 렌더링 로직을 공유한다."""
-    para_xml, used, _ = pdf_to_hwpx._para_from_segments(
-        segments or [{"type": "text", "content": ""}], eq_id
-    )
+    문단/run 속성은 템플릿의 '작동하는' 미주와 동일하게 맞춘다
+    (id=2147483648 = 미주 sub-list 전용, paraPr/style/charPr ref 도 동일)."""
+    P = pdf_to_hwpx
+    eid = eq_id
+    parts = []
+    max_h = 1100
     if autonum_n is not None:
-        ctrl = (
+        parts.append(
             f'<hp:ctrl><hp:autoNum num="{autonum_n}" numType="ENDNOTE">'
             f'<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" '
             f'suffixChar=")" supscript="0"/></hp:autoNum></hp:ctrl><hp:t> </hp:t>'
         )
-        para_xml = para_xml.replace(
-            '<hp:run charPrIDRef="0">', '<hp:run charPrIDRef="0">' + ctrl, 1
-        )
-    return para_xml, used
+    for seg in segments:
+        if seg.get("type") == "text":
+            txt = P._xt(seg["content"])
+            if txt:
+                parts.append(f"<hp:t>{txt}</hp:t>")
+        else:
+            hwpeq = P.latex_to_hwpeq(seg["content"])
+            _, h, _ = P.estimate_eq_size(hwpeq)
+            max_h = max(max_h, h)
+            parts.append(P._eq_block(eid, hwpeq))
+            eid += 1
+    parts.append("<hp:t/>")  # 템플릿과 동일하게 run 끝 빈 텍스트
+    if autonum_n is not None:
+        para_attr = 'id="2147483648" paraPrIDRef="10" styleIDRef="15"'
+        run_attr = 'charPrIDRef="3"'
+    else:
+        para_attr = 'id="2147483648" paraPrIDRef="22" styleIDRef="0"'
+        run_attr = 'charPrIDRef="0"'
+    bl = int(max_h * 0.85)
+    xml = (
+        f'<hp:p {para_attr} pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run {run_attr}>{"".join(parts)}</hp:run>'
+        f'<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="{max_h}" '
+        f'textheight="{max_h}" baseline="{bl}" spacing="272" horzpos="0" '
+        f'horzsize="42520" flags="393216"/></hp:linesegarray>'
+        f"</hp:p>"
+    )
+    return xml, eid - eq_id
 
 
 def _en_make_endnote(sol_entries: list, eq_id: int, num: int, inst_id: int) -> tuple:
@@ -320,6 +346,8 @@ def _patched_make_section_xml(problems: list) -> str:
     inst_seq = 1800000000
 
     def _attach(para_xml: str, base: str) -> str:
+        """문제 본문 run 맨 앞에 미주 마커 삽입. endNote 는 반드시 <hp:ctrl>
+        로 감싸야 한컴이 인식한다."""
         nonlocal eq_id, endnote_num, inst_seq
         if (not base) or base in endnote_done or base not in solutions_by_base:
             return para_xml
@@ -329,7 +357,14 @@ def _patched_make_section_xml(problems: list) -> str:
             solutions_by_base[base], eq_id, endnote_num, inst_seq)
         eq_id += used
         endnote_done.add(base)
-        return para_xml.replace("</hp:run>", en_xml + "</hp:run>", 1)
+        marker = "<hp:ctrl>" + en_xml + "</hp:ctrl>"
+        # _para_from_segments 의 run 여는 태그는 항상 '<hp:run charPrIDRef="0">'.
+        # 그 직후(= 문제 본문 맨 앞)에 마커 삽입.
+        return para_xml.replace(
+            '<hp:run charPrIDRef="0">',
+            '<hp:run charPrIDRef="0">' + marker,
+            1,
+        )
 
     for p_idx, prob in enumerate(body_problems):
         segments = prob.get("segments", [])
@@ -391,7 +426,7 @@ def _patched_make_section_xml(problems: list) -> str:
         lines.append(
             '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
             'pageBreak="0" columnBreak="0" merged="0">'
-            f'<hp:run charPrIDRef="0">{en_xml}</hp:run>'
+            f'<hp:run charPrIDRef="0"><hp:ctrl>{en_xml}</hp:ctrl></hp:run>'
             f'{P._lineseg(1000)}'
             '</hp:p>'
         )

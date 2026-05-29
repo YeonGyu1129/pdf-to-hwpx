@@ -841,6 +841,8 @@ def _endnote_subpara(segments: list, eq_id: int, autonum_n=None) -> tuple:
     """
     미주 subList 안의 문단 1개 생성.
     autonum_n 이 주어지면 그 문단 맨 앞에 미주 번호(autoNum) 마커를 넣는다.
+    문단/run 속성은 템플릿의 '작동하는' 미주와 동일하게 맞춘다
+    (id=2147483648 = 미주 sub-list 전용, paraPrIDRef/styleIDRef/charPrIDRef 도 동일).
     반환: (xml, 사용된 eq_id 수)
     """
     eid = eq_id
@@ -863,11 +865,21 @@ def _endnote_subpara(segments: list, eq_id: int, autonum_n=None) -> tuple:
             max_h = max(max_h, h)
             parts.append(_eq_block(eid, hwpeq))
             eid += 1
+    parts.append('<hp:t/>')  # 템플릿과 동일하게 run 끝 빈 텍스트
+    # 첫 문단(autoNum 포함)과 이후 문단의 스타일 ref 를 템플릿과 동일하게
+    if autonum_n is not None:
+        para_attr = 'id="2147483648" paraPrIDRef="10" styleIDRef="15"'
+        run_attr = 'charPrIDRef="3"'
+    else:
+        para_attr = 'id="2147483648" paraPrIDRef="22" styleIDRef="0"'
+        run_attr = 'charPrIDRef="0"'
+    bl = int(max_h * 0.85)
     xml = (
-        f'<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
-        f'pageBreak="0" columnBreak="0" merged="0">'
-        f'<hp:run charPrIDRef="0">{"".join(parts)}</hp:run>'
-        f'{_lineseg(max_h)}'
+        f'<hp:p {para_attr} pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run {run_attr}>{"".join(parts)}</hp:run>'
+        f'<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="{max_h}" '
+        f'textheight="{max_h}" baseline="{bl}" spacing="272" horzpos="0" '
+        f'horzsize="42520" flags="393216"/></hp:linesegarray>'
         f'</hp:p>'
     )
     return xml, eid - eq_id
@@ -951,7 +963,8 @@ def make_section_xml(problems: list) -> str:
     inst_seq = 1800000000  # endNote instId 시드
 
     def _attach_endnote(para_xml: str, base: str) -> str:
-        """para_xml(단일 run 문단)의 run 끝에 base 에 해당하는 미주를 인라인 삽입."""
+        """para_xml(단일 run 문단)의 run 맨 앞에 base 에 해당하는 미주를 삽입.
+        endNote 컨트롤은 반드시 <hp:ctrl> 로 감싸야 한컴이 인식한다."""
         nonlocal eq_id, endnote_num, inst_seq
         if (not base) or base in endnote_done or base not in solutions_by_base:
             return para_xml
@@ -961,8 +974,14 @@ def make_section_xml(problems: list) -> str:
             solutions_by_base[base], eq_id, endnote_num, inst_seq)
         eq_id += used
         endnote_done.add(base)
-        # 단일 run 문단의 첫 </hp:run> 직전에 삽입 (= 본문 텍스트 맨 뒤 마커)
-        return para_xml.replace('</hp:run>', en_xml + '</hp:run>', 1)
+        marker = '<hp:ctrl>' + en_xml + '</hp:ctrl>'
+        # _para_from_segments 의 run 여는 태그는 항상 '<hp:run charPrIDRef="0">'.
+        # 그 직후(= 문제 본문 맨 앞)에 마커 삽입.
+        return para_xml.replace(
+            '<hp:run charPrIDRef="0">',
+            '<hp:run charPrIDRef="0">' + marker,
+            1,
+        )
 
     for p_idx, prob in enumerate(body_problems):
         num      = prob.get('number', p_idx + 1)
@@ -1052,7 +1071,7 @@ def make_section_xml(problems: list) -> str:
         lines.append(
             '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
             'pageBreak="0" columnBreak="0" merged="0">'
-            f'<hp:run charPrIDRef="0">{en_xml}</hp:run>'
+            f'<hp:run charPrIDRef="0"><hp:ctrl>{en_xml}</hp:ctrl></hp:run>'
             f'{_lineseg(1000)}'
             '</hp:p>'
         )
