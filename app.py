@@ -195,6 +195,17 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
         out,
     )
 
+    # 6-b-5) 윗줄/모자 등 점쌍 장식 (bar/hat/tilde/dot/ddot)
+    #     `bar {rm{AQ}}` 형태는 한컴이 잘못 파싱해 bar 범위가 뒤따르는
+    #     연산자(BOT/TIMES 등)·다음 장식까지 번져 먹어버린다
+    #     (예: `bar {rm{AQ}} BOT bar {rm{BP}}` → "AQBP" 한 줄 bar, ⊥ 소멸).
+    #     vec 와 동일하게 `{bar{rm AQ}}` 로 외부 그룹 + 공백형 rm 으로 격리.
+    out = re.sub(
+        r"\b(bar|hat|tilde|dot|ddot)\s*\{rm\{([^{}]+)\}\}",
+        lambda m: f"{{{m.group(1)}{{rm {m.group(2)}}}}}",
+        out,
+    )
+
     # 6-c) `\right|+\left|` 짝짓기 깨짐 안전망
     #     skill 변환기가 절댓값 연속 (\left|...\right|+\left|...\right|) 을
     #     변환할 때 짝이 어긋나 `right left | + left right |` 같은

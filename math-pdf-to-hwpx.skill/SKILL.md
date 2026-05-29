@@ -102,7 +102,7 @@ description: 수학 문제 이미지/PDF를 한글 문서(.hwpx) 파일로 변�
 
 | 종류 | LaTeX | hwpEQ 출력 |
 |------|-------|----------|
-| 선분 (화살표 없을 때) | `\overline{\mathrm{AB}}` | `bar {rm{AB}}` |
+| 선분 (화살표 없을 때) | `\overline{\mathrm{AB}}` | `{bar{rm AB}}` |
 | **호** (글자 위 둥근 호 ⌒) | `\widehat{\mathrm{AB}}` | `{arch{rm AB}}` |
 | 점 좌표 | `\mathrm{A}(2, 0)` | `rm{A}(2, 0)` |
 | 각 | `\angle \mathrm{ABC}` | `ANGLE rm{ABC}` |
