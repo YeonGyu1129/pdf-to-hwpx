@@ -296,10 +296,41 @@ def latex_to_hwpeq(latex: str) -> str:
 
     # ── 2. 루트 — 앞에 공백을 넣어 인접 기호(\pm 등)와 분리 ──
     # 예: \pm\sqrt{x} → \pm sqrt {x} (공백 있음 → \pm\b 정상 매칭)
-    s = re.sub(r'\\sqrt\[([^\]]+)\]\{((?:[^{}]|\{[^{}]*\})*)\}',
-               r' sqrt [\1] {\2}', s)
-    s = re.sub(r'\\sqrt\{((?:[^{}]|\{[^{}]*\})*)\}',
-               r' sqrt {\1}', s)
+    # 중첩 \sqrt (이중근호 등)을 위해 balanced-brace 매처로 임의 깊이 처리.
+    # (단순 regex 1회만 돌리면 안쪽 \sqrt 가 그대로 남아 step 8 catch-all
+    #  `\\[a-zA-Z]+` 에 잡혀 통째로 사라지는 버그 발생:
+    #  예) `\sqrt{(4\sqrt{3})^2+2^2}` → `sqrt {(4{3})^{2}+2^{2}}` 처럼
+    #      안쪽 √3 가 소멸.)
+    def _convert_sqrt_balanced(src: str) -> str:
+        i, out = 0, []
+        n = len(src)
+        while i < n:
+            mn = re.match(r'\\sqrt\[([^\]]+)\]\{', src[i:])
+            m1 = re.match(r'\\sqrt\{', src[i:])
+            m = mn or m1
+            if m:
+                idx_arg = mn.group(1) if mn else None
+                start = i + m.end()
+                depth, j = 1, start
+                while j < n and depth > 0:
+                    if src[j] == '{':
+                        depth += 1
+                    elif src[j] == '}':
+                        depth -= 1
+                    j += 1
+                content = src[start:j-1]
+                content = _convert_sqrt_balanced(content)  # 재귀 내부 처리
+                if idx_arg is not None:
+                    out.append(f' sqrt [{idx_arg}] {{{content}}}')
+                else:
+                    out.append(f' sqrt {{{content}}}')
+                i = j
+            else:
+                out.append(src[i])
+                i += 1
+        return ''.join(out)
+
+    s = _convert_sqrt_balanced(s)
 
     # ── 3. 극한 구조 ──
     # 중괄호 포함 패턴 (x→-1/2 같이 frac이 있는 경우도 처리)

@@ -81,6 +81,43 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
     latex = re.sub(rf"\\overset\{{\\frown\}}\{{{_arc_arg}\}}", _save_arc, latex)
     latex = re.sub(rf"\\overarc\{{{_arc_arg}\}}", _save_arc, latex)
 
+    # 중첩 \sqrt 사전 변환 (원본 latex_to_hwpeq 은 \sqrt 를 1회만 처리해서
+    # 안쪽 \sqrt 가 그대로 남고 step 8 catch-all `\\[a-zA-Z]+` 에 의해
+    # 통째로 사라지는 버그가 있음. 예: `\sqrt{(4\sqrt{3})^2+2^2}` →
+    # `sqrt {(4{3})^{2}+2^{2}}` (안쪽 √3 소멸).
+    # balanced-brace 방식으로 임의 깊이 중첩을 안전하게 처리.
+    def _convert_sqrt_balanced(src: str) -> str:
+        i, out = 0, []
+        n = len(src)
+        while i < n:
+            mn = re.match(r"\\sqrt\[([^\]]+)\]\{", src[i:])
+            m1 = re.match(r"\\sqrt\{", src[i:])
+            m = mn or m1
+            if m:
+                idx_arg = mn.group(1) if mn else None
+                start = i + m.end()
+                depth, j = 1, start
+                while j < n and depth > 0:
+                    if src[j] == "{":
+                        depth += 1
+                    elif src[j] == "}":
+                        depth -= 1
+                    j += 1
+                # j points just past the closing }
+                content = src[start : j - 1]
+                content = _convert_sqrt_balanced(content)  # 재귀적 내부 처리
+                if idx_arg is not None:
+                    out.append(f" sqrt [{idx_arg}] {{{content}}}")
+                else:
+                    out.append(f" sqrt {{{content}}}")
+                i = j
+            else:
+                out.append(src[i])
+                i += 1
+        return "".join(out)
+
+    latex = _convert_sqrt_balanced(latex)
+
     out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
 
     # 보호된 \mathit 복원 → it{X}
