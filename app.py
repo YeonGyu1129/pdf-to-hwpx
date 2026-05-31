@@ -486,6 +486,123 @@ def _patched_make_section_xml(problems: list) -> str:
 pdf_to_hwpx.make_section_xml = _patched_make_section_xml
 
 # ────────────────────────────────────────────────────────────
+# build_hwpx 템플릿 자리표시자(splice) — monkey-patch
+# ────────────────────────────────────────────────────────────
+# 사용자가 한글에서 템플릿을 만들 때 본문에 `{{문제삽입}}` 표식을 입력하면
+# 그 문단만 생성된 문제 문단들로 치환. 템플릿의 제목·머리말·꼬리말·여백
+# ·이미지 등은 그대로 유지. 표식이 없으면 기존 동작(전체 교체).
+# 원본 pdf_to_hwpx.build_hwpx 는 frozen 이라 monkey-patch 로 처리.
+
+TEMPLATE_PLACEHOLDERS = ["{{문제삽입}}", "{{CONTENT}}", "{{문제}}"]
+
+
+def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
+    """section_xml 안에서 markers 중 하나를 포함한 <hp:p>...</hp:p> 의
+    (start, end) 반환. 중첩된 <hp:p>(subList 안 미주 등) 균형 매칭. 없으면 None."""
+    i = 0
+    n = len(section_xml)
+    open_re = re.compile(r"<hp:p\b[^>]*>")
+    while i < n:
+        m = open_re.search(section_xml, i)
+        if not m:
+            return None
+        para_start = m.start()
+        depth = 1
+        scan = m.end()
+        while scan < n and depth > 0:
+            nxt_open = open_re.search(section_xml, scan)
+            nxt_close = section_xml.find("</hp:p>", scan)
+            if nxt_close == -1:
+                return None
+            if nxt_open and nxt_open.start() < nxt_close:
+                depth += 1
+                scan = nxt_open.end()
+            else:
+                depth -= 1
+                scan = nxt_close + len("</hp:p>")
+        para_end = scan
+        text = "".join(
+            re.findall(r"<hp:t>([^<]*)</hp:t>", section_xml[para_start:para_end])
+        )
+        if any(mk in text for mk in markers):
+            return para_start, para_end
+        i = para_end
+    return None
+
+
+def _problem_paragraphs_only(problems: list) -> str:
+    """patched make_section_xml 결과에서 헤더(<?xml>, <hs:sec>, secPr 문단)
+    와 꼬리(</hs:sec>) 를 제거한 순수 문제 문단들만 반환."""
+    full = pdf_to_hwpx.make_section_xml(problems)
+    secpr_end = full.find("</hp:p>") + len("</hp:p>")
+    sec_close = full.rfind("</hs:sec>")
+    return full[secpr_end:sec_close].strip()
+
+
+if not hasattr(pdf_to_hwpx, "_original_build_hwpx"):
+    pdf_to_hwpx._original_build_hwpx = pdf_to_hwpx.build_hwpx
+
+
+def _patched_build_hwpx(template_path: str, output_path: str, problems: list,
+                        extra_images: dict = None):
+    """템플릿에 `{{문제삽입}}` 등 표식이 있으면 그 문단만 치환(나머지 본문
+    ·secPr·머리말 보존). 없으면 원본 build_hwpx 위임."""
+    import zipfile as _zipfile
+    import os as _os
+
+    # 1) 템플릿 section 미리 읽어 표식 유무 확인
+    with _zipfile.ZipFile(template_path, "r") as _src:
+        template_section = _src.read("Contents/section0.xml").decode("utf-8")
+    marker_pos = _find_marker_paragraph(template_section, TEMPLATE_PLACEHOLDERS)
+
+    if not marker_pos:
+        # 기존 동작 그대로
+        return pdf_to_hwpx._original_build_hwpx(
+            template_path, output_path, problems, extra_images
+        )
+
+    # 2) 자리표시자 모드: 표식 문단만 치환
+    ps, pe = marker_pos
+    problem_blob = _problem_paragraphs_only(problems)
+    new_section = (template_section[:ps] + problem_blob + template_section[pe:]).encode("utf-8")
+
+    MIME = {
+        ".jpg": "image/jpg", ".jpeg": "image/jpg",
+        ".png": "image/png", ".bmp": "image/bmp",
+        ".gif": "image/gif", ".tif": "image/tiff",
+        ".tiff": "image/tiff", ".webp": "image/webp",
+    }
+    with _zipfile.ZipFile(template_path, "r") as src, \
+         _zipfile.ZipFile(output_path, "w", _zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            if item.filename == "Contents/section0.xml":
+                dst.writestr(item.filename, new_section)
+            elif item.filename == "Contents/content.hpf" and extra_images:
+                hpf = src.read(item.filename).decode("utf-8")
+                new_items = ""
+                for bin_name, img_path in extra_images.items():
+                    ext = _os.path.splitext(img_path)[1].lower()
+                    mime = MIME.get(ext, "image/png")
+                    new_items += (
+                        f'<opf:item id="{bin_name}" '
+                        f'href="BinData/{bin_name}{ext}" '
+                        f'media-type="{mime}" isEmbeded="1"/>'
+                    )
+                hpf = hpf.replace("</opf:manifest>", new_items + "</opf:manifest>")
+                dst.writestr(item.filename, hpf.encode("utf-8"))
+            else:
+                dst.writestr(item, src.read(item.filename))
+        if extra_images:
+            for bin_name, img_path in extra_images.items():
+                ext = _os.path.splitext(img_path)[1].lower()
+                archive_name = f"BinData/{bin_name}{ext}"
+                with open(img_path, "rb") as f:
+                    dst.writestr(archive_name, f.read())
+
+
+pdf_to_hwpx.build_hwpx = _patched_build_hwpx
+
+# ────────────────────────────────────────────────────────────
 # 상수 / 설정
 # ────────────────────────────────────────────────────────────
 
@@ -2148,7 +2265,28 @@ def main() -> None:
         "HWPX 템플릿 업로드 (선택 — 기본 template.hwpx 가 있으면 생략 가능)",
         type=["hwpx"],
         accept_multiple_files=False,
+        help=(
+            "한글에서 직접 디자인한 템플릿을 사용할 수 있습니다.\n"
+            "본문에 `{{문제삽입}}` 표식을 한 줄로 적어두면 그 위치에 문제가 삽입되고,\n"
+            "나머지 본문(제목·학생정보·머리말·꼬리말 등)은 그대로 유지됩니다.\n"
+            "표식이 없으면 기존 동작(전체 본문 교체)으로 처리됩니다."
+        ),
     )
+    with st.expander("📋 사용자 정의 템플릿 만드는 법", expanded=False):
+        st.markdown(
+            """
+**시험지·학습지처럼 디자인된 한글 문서에 문제만 끼워 넣고 싶을 때**
+
+1. 한글에서 `template.hwpx` 를 열거나 새 .hwpx 문서 만들기
+2. 제목·학교명·"성명: ___" 같은 줄·머리말·꼬리말·페이지번호 등 자유롭게 디자인
+3. **문제가 들어갈 자리에 다음 표식을 한 줄로 입력**:
+   - `{{문제삽입}}`  (또는 `{{문제}}`, `{{CONTENT}}`)
+4. 다른 이름으로 저장 (예: `시험지_2026.hwpx`)
+5. 위 업로드 칸에 그 파일 올리고 변환
+
+표식은 한 군데만, 단독 문단으로 적어주세요. 다른 텍스트와 같이 적으면 안 됩니다.
+"""
+        )
 
     has_input = bool(uploaded) or bool(st.session_state.pasted_images)
     if not has_input:

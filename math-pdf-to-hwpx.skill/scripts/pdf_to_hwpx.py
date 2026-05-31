@@ -1205,14 +1205,82 @@ def make_image_para(bin_name: str, org_w: int, org_h: int,
     return full_p
 
 
+# ── 템플릿 자리표시자(placeholder) 시스템 ──
+# 사용자가 한글에서 템플릿을 만들 때 본문에 `{{문제삽입}}` 같은 표식을 입력하면
+# 그 문단만 생성된 문제 문단들로 치환되고, 템플릿의 나머지 본문(제목·머리말·꼬리말
+# ·학생정보·이미지 등)은 그대로 유지된다. 표식이 없으면 기존 동작(전체 교체).
+
+TEMPLATE_PLACEHOLDERS = ['{{문제삽입}}', '{{CONTENT}}', '{{문제}}']
+
+
+def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
+    """section_xml 안에서 markers 중 하나를 포함한 <hp:p>...</hp:p> 의 (start, end) 반환.
+    중첩된 <hp:p> (subList 안 미주 등) 도 정확히 균형 매칭. 없으면 None."""
+    i = 0
+    n = len(section_xml)
+    open_re = re.compile(r'<hp:p\b[^>]*>')
+    while i < n:
+        m = open_re.search(section_xml, i)
+        if not m:
+            return None
+        para_start = m.start()
+        depth = 1
+        scan = m.end()
+        while scan < n and depth > 0:
+            nxt_open = open_re.search(section_xml, scan)
+            nxt_close = section_xml.find('</hp:p>', scan)
+            if nxt_close == -1:
+                return None
+            if nxt_open and nxt_open.start() < nxt_close:
+                depth += 1
+                scan = nxt_open.end()
+            else:
+                depth -= 1
+                scan = nxt_close + len('</hp:p>')
+        para_end = scan
+        # 문단 안 텍스트(여러 <hp:t> 이어붙이기) 에 표식이 들어있는지
+        text = ''.join(re.findall(r'<hp:t>([^<]*)</hp:t>', section_xml[para_start:para_end]))
+        if any(mk in text for mk in markers):
+            return para_start, para_end
+        i = para_end
+    return None
+
+
+def _problem_paragraphs_only(problems: list) -> str:
+    """make_section_xml 결과에서 헤더(<?xml>, <hs:sec>, secPr 문단) 와
+    꼬리(</hs:sec>) 를 제거한 순수 문제 문단들만 반환. splice 용."""
+    full = make_section_xml(problems)
+    # 첫 번째 </hp:p> 는 secPr 문단 끝 → 그 다음부터가 문제 문단들
+    secpr_end = full.find('</hp:p>') + len('</hp:p>')
+    sec_close = full.rfind('</hs:sec>')
+    return full[secpr_end:sec_close].strip()
+
+
 def build_hwpx(template_path: str, output_path: str, problems: list,
                extra_images: dict = None):
     """
-    기존 .hwpx 파일 복사 후 section0.xml만 교체.
+    기존 .hwpx 파일 복사 후 section0.xml 처리.
+    - 템플릿에 `{{문제삽입}}` 같은 표식이 있으면 그 문단만 문제로 치환
+      (템플릿의 제목·머리말·여백 설정 등 모두 유지).
+    - 표식이 없으면 section0.xml 전체 교체 (기존 동작).
     extra_images: {'image5': '/path/to/image.jpg', ...} 형태로
                   BinData에 추가할 이미지 파일 지정
     """
-    new_section = make_section_xml(problems).encode('utf-8')
+    # 1) 템플릿 section 먼저 읽어서 자리표시자 유무 판정
+    with zipfile.ZipFile(template_path, 'r') as _src:
+        template_section = _src.read('Contents/section0.xml').decode('utf-8')
+
+    marker_pos = _find_marker_paragraph(template_section, TEMPLATE_PLACEHOLDERS)
+    if marker_pos:
+        # 자리표시자 모드: 표식 문단만 치환, 나머지 본문·secPr 보존
+        ps, pe = marker_pos
+        problem_blob = _problem_paragraphs_only(problems)
+        spliced = template_section[:ps] + problem_blob + template_section[pe:]
+        new_section = spliced.encode('utf-8')
+        print(f"  → 템플릿 자리표시자 감지 — 그 위치에 문제 삽입 (templ 본문 보존)")
+    else:
+        # 기존 동작: section0.xml 전체 교체
+        new_section = make_section_xml(problems).encode('utf-8')
 
     # extra_images가 있으면 content.hpf에도 opf:item 등록 필요
     MIME = {
