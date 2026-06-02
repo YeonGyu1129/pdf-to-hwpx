@@ -508,15 +508,22 @@ TEMPLATE_PLACEHOLDERS = ["{{문제삽입}}", "{{문제입력}}", "{{CONTENT}}", 
 
 
 def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
-    """section_xml 안에서 markers 중 하나를 포함한 <hp:p>...</hp:p> 의
-    (start, end) 반환. 중첩된 <hp:p>(subList 안 미주 등) 균형 매칭. 없으면 None."""
-    i = 0
+    """첫 표식 paragraph (start, end). 없으면 None. (호환용)."""
+    found = _find_all_marker_paragraphs(section_xml, markers)
+    return found[0] if found else None
+
+
+def _find_all_marker_paragraphs(section_xml: str, markers: list) -> list:
+    """section_xml 안에서 markers 를 포함한 모든 <hp:p>...</hp:p> 의
+    (start, end) 리스트 (등장 순서). 중첩 <hp:p> 균형 매칭."""
     n = len(section_xml)
     open_re = re.compile(r"<hp:p\b[^>]*>")
+    results = []
+    i = 0
     while i < n:
         m = open_re.search(section_xml, i)
         if not m:
-            return None
+            break
         para_start = m.start()
         depth = 1
         scan = m.end()
@@ -524,7 +531,7 @@ def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
             nxt_open = open_re.search(section_xml, scan)
             nxt_close = section_xml.find("</hp:p>", scan)
             if nxt_close == -1:
-                return None
+                return results
             if nxt_open and nxt_open.start() < nxt_close:
                 depth += 1
                 scan = nxt_open.end()
@@ -536,9 +543,23 @@ def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
             re.findall(r"<hp:t>([^<]*)</hp:t>", section_xml[para_start:para_end])
         )
         if any(mk in text for mk in markers):
-            return para_start, para_end
+            results.append((para_start, para_end))
         i = para_end
-    return None
+    return results
+
+
+def _group_problems(problems: list) -> list:
+    """문제 단위 그룹핑: 새 main:True 가 등장할 때마다 새 그룹."""
+    groups = []
+    cur = []
+    for p in problems:
+        if isinstance(p, dict) and p.get("main", False) and cur:
+            groups.append(cur)
+            cur = []
+        cur.append(p)
+    if cur:
+        groups.append(cur)
+    return groups
 
 
 def _problem_paragraphs_only(problems: list) -> str:
@@ -561,21 +582,42 @@ def _patched_build_hwpx(template_path: str, output_path: str, problems: list,
     import zipfile as _zipfile
     import os as _os
 
-    # 1) 템플릿 section 미리 읽어 표식 유무 확인
+    # 1) 템플릿 section 미리 읽어 표식 유무 확인 (모든 표식 위치)
     with _zipfile.ZipFile(template_path, "r") as _src:
         template_section = _src.read("Contents/section0.xml").decode("utf-8")
-    marker_pos = _find_marker_paragraph(template_section, TEMPLATE_PLACEHOLDERS)
+    markers_pos = _find_all_marker_paragraphs(template_section, TEMPLATE_PLACEHOLDERS)
 
-    if not marker_pos:
+    if not markers_pos:
         # 기존 동작 그대로
         return pdf_to_hwpx._original_build_hwpx(
             template_path, output_path, problems, extra_images
         )
 
-    # 2) 자리표시자 모드: 표식 문단만 치환
-    ps, pe = marker_pos
-    problem_blob = _problem_paragraphs_only(problems)
-    new_section = (template_section[:ps] + problem_blob + template_section[pe:]).encode("utf-8")
+    # 2) 자리표시자 모드: N개 표식에 문제 그룹 N개 1:1 분배
+    #    초과 그룹은 마지막 표식에, 남는 표식은 원본 유지.
+    groups = _group_problems(problems)
+    N, M = len(markers_pos), len(groups)
+    assignments = []  # [(start, end, group_indices or None)]
+    for i in range(N):
+        if M == 0:
+            assignments.append((markers_pos[i][0], markers_pos[i][1], None))
+        elif i < min(N - 1, M):
+            assignments.append((markers_pos[i][0], markers_pos[i][1], [i]))
+        elif i == N - 1 and i < M:
+            assignments.append(
+                (markers_pos[i][0], markers_pos[i][1], list(range(i, M))))
+        else:
+            assignments.append((markers_pos[i][0], markers_pos[i][1], None))
+    spliced = template_section
+    for ps, pe, gidx in reversed(assignments):
+        if gidx is None:
+            continue
+        merged = []
+        for g in gidx:
+            merged.extend(groups[g])
+        blob = _problem_paragraphs_only(merged) if merged else ""
+        spliced = spliced[:ps] + blob + spliced[pe:]
+    new_section = spliced.encode("utf-8")
 
     MIME = {
         ".jpg": "image/jpg", ".jpeg": "image/jpg",
