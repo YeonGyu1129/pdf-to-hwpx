@@ -35,6 +35,17 @@ sys.path.insert(0, str(HERE))
 import pdf_to_hwpx  # noqa: E402
 
 # ────────────────────────────────────────────────────────────
+# 페이지 방향: 세로(NARROWLY) 강제
+# ────────────────────────────────────────────────────────────
+# 원본 _SECPR 은 `landscape="PORTRAIT"` 인데 한컴 HWPX 표준 enum 은
+# NARROWLY(세로) / WIDELY(가로) 이라 PORTRAIT 가 무효 → fallback 으로
+# 가로로 렌더됨. NARROWLY 로 교체해 항상 세로로 출력.
+if 'landscape="PORTRAIT"' in pdf_to_hwpx._SECPR:
+    pdf_to_hwpx._SECPR = pdf_to_hwpx._SECPR.replace(
+        'landscape="PORTRAIT"', 'landscape="NARROWLY"'
+    )
+
+# ────────────────────────────────────────────────────────────
 # pdf_to_hwpx.latex_to_hwpeq 출력 보정 (monkey-patch)
 # 스킬이 \mathrm{X} 를 "X" (따옴표) 로 변환하는데, 한컴 수식편집기에서
 # 로만체로 렌더되지 않을 수 있음. 출력의 "..." 를 rm{...} 로 치환.
