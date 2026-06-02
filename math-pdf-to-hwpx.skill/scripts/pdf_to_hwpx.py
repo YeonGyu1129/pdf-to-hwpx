@@ -1377,6 +1377,35 @@ def _find_all_marker_paragraphs(section_xml: str, markers: list) -> list:
     return results
 
 
+def _extract_style_ids(paragraph_xml: str) -> tuple:
+    """paragraph XML 에서 paraPrIDRef, styleIDRef, 첫 run 의 charPrIDRef 추출.
+    표식 문단의 글꼴·크기·굵기를 그대로 따라가는 데 사용. 없으면 None."""
+    p_id = re.search(r'\bparaPrIDRef="(\d+)"', paragraph_xml)
+    s_id = re.search(r'\bstyleIDRef="(\d+)"', paragraph_xml)
+    c_id = re.search(r'<hp:run\b[^>]*?\bcharPrIDRef="(\d+)"', paragraph_xml)
+    return (p_id.group(1) if p_id else None,
+            s_id.group(1) if s_id else None,
+            c_id.group(1) if c_id else None)
+
+
+def _apply_template_styles(blob: str, paraPrID: str, styleID: str, charPrID: str) -> str:
+    """문제 문단들 blob 의 외곽 paragraph(시작 패턴: `<hp:p id="0" paraPrIDRef="0"
+    styleIDRef="0" ... <hp:run charPrIDRef="0">`) 의 스타일 ID 들을 사용자 표식
+    문단에서 추출한 ID 로 치환. nested(미주 subList·박스 rect 안 등)는 id 가
+    달라서 영향 없음."""
+    if paraPrID is None and styleID is None and charPrID is None:
+        return blob
+    old = ('<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+           'pageBreak="0" columnBreak="0" merged="0">'
+           '<hp:run charPrIDRef="0">')
+    new = (
+        f'<hp:p id="0" paraPrIDRef="{paraPrID or "0"}" '
+        f'styleIDRef="{styleID or "0"}" pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="{charPrID or "0"}">'
+    )
+    return blob.replace(old, new)
+
+
 def _group_problems(problems: list) -> list:
     """problems 를 '문제 단위'로 그룹핑. 새 main:True 가 등장할 때마다 새 그룹.
     같은 문제의 본문·보기·박스·풀이(미주) 는 한 그룹으로 묶임."""
@@ -1446,11 +1475,15 @@ def build_hwpx(template_path: str, output_path: str, problems: list,
         for ps, pe, gidx in reversed(assignments):
             if gidx is None:
                 continue  # 원본 표식 유지
+            # 표식 문단의 스타일 ID 추출 → 삽입 문단도 동일 스타일 적용
+            mk_xml = template_section[ps:pe]
+            pp_id, st_id, cp_id = _extract_style_ids(mk_xml)
             # 해당 그룹들의 문제들을 합쳐 paragraphs 로
             merged = []
             for g in gidx:
                 merged.extend(groups[g])
             problem_blob = _problem_paragraphs_only(merged) if merged else ''
+            problem_blob = _apply_template_styles(problem_blob, pp_id, st_id, cp_id)
             spliced = spliced[:ps] + problem_blob + spliced[pe:]
         new_section = spliced.encode('utf-8')
         filled = sum(1 for a in assignments if a[2] is not None)

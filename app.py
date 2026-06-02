@@ -548,6 +548,32 @@ def _find_all_marker_paragraphs(section_xml: str, markers: list) -> list:
     return results
 
 
+def _extract_style_ids(paragraph_xml: str) -> tuple:
+    """paragraph XML 에서 paraPrIDRef, styleIDRef, 첫 run 의 charPrIDRef 추출.
+    표식 문단 글꼴·크기·굵기를 그대로 상속하기 위한 헬퍼."""
+    p_id = re.search(r'\bparaPrIDRef="(\d+)"', paragraph_xml)
+    s_id = re.search(r'\bstyleIDRef="(\d+)"', paragraph_xml)
+    c_id = re.search(r'<hp:run\b[^>]*?\bcharPrIDRef="(\d+)"', paragraph_xml)
+    return (p_id.group(1) if p_id else None,
+            s_id.group(1) if s_id else None,
+            c_id.group(1) if c_id else None)
+
+
+def _apply_template_styles(blob: str, paraPrID: str, styleID: str, charPrID: str) -> str:
+    """문제 문단들 blob 의 외곽 paragraph 표준 시작 패턴을 사용자 표식 ID 로 치환."""
+    if paraPrID is None and styleID is None and charPrID is None:
+        return blob
+    old = ('<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+           'pageBreak="0" columnBreak="0" merged="0">'
+           '<hp:run charPrIDRef="0">')
+    new = (
+        f'<hp:p id="0" paraPrIDRef="{paraPrID or "0"}" '
+        f'styleIDRef="{styleID or "0"}" pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="{charPrID or "0"}">'
+    )
+    return blob.replace(old, new)
+
+
 def _group_problems(problems: list) -> list:
     """문제 단위 그룹핑: 새 main:True 가 등장할 때마다 새 그룹."""
     groups = []
@@ -612,10 +638,13 @@ def _patched_build_hwpx(template_path: str, output_path: str, problems: list,
     for ps, pe, gidx in reversed(assignments):
         if gidx is None:
             continue
+        mk_xml = template_section[ps:pe]
+        pp_id, st_id, cp_id = _extract_style_ids(mk_xml)
         merged = []
         for g in gidx:
             merged.extend(groups[g])
         blob = _problem_paragraphs_only(merged) if merged else ""
+        blob = _apply_template_styles(blob, pp_id, st_id, cp_id)
         spliced = spliced[:ps] + blob + spliced[pe:]
     new_section = spliced.encode("utf-8")
 
