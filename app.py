@@ -614,6 +614,110 @@ def _patched_build_hwpx(template_path: str, output_path: str, problems: list,
 pdf_to_hwpx.build_hwpx = _patched_build_hwpx
 
 # ────────────────────────────────────────────────────────────
+# rect 기반 박스 (조건상자·보기상자) — monkey-patch
+# ────────────────────────────────────────────────────────────
+# 참고 hwpx 에서 추출한 rect 도형 박스 템플릿을 사용해 보다 보기 좋은
+# 박스를 생성. box_templates.py 가 없으면 기존 표(table) 기반 fallback.
+
+try:
+    from box_templates import CONDITION_BOX_RECT, BOGI_BOX_RECT
+    _RECT_BOX_OK = True
+except Exception:
+    _RECT_BOX_OK = False
+
+
+def _fill_box_template(template: str, **kwargs) -> str:
+    result = template
+    for k, v in kwargs.items():
+        result = result.replace('{' + k + '}', str(v))
+    return result
+
+
+def _box_inner_para_app(segments: list, eq_id: int,
+                        horzsize: int = 40012, vertpos: int = 0) -> tuple:
+    """박스 안 subList 의 문단 1개 (pdf_to_hwpx 헬퍼 재사용)."""
+    P = pdf_to_hwpx
+    eid = eq_id
+    parts = []
+    max_h = 1000
+    for seg in segments:
+        if seg.get('type') == 'text':
+            txt = P._xt(seg['content'])
+            if txt:
+                parts.append(f'<hp:t>{txt}</hp:t>')
+        else:
+            hwpeq = P.latex_to_hwpeq(seg['content'])
+            _, h, _ = P.estimate_eq_size(hwpeq)
+            max_h = max(max_h, h)
+            parts.append(P._eq_block(eid, hwpeq))
+            eid += 1
+    bl = int(max_h * 0.85)
+    xml = (
+        f'<hp:p id="2147483648" paraPrIDRef="0" styleIDRef="0" '
+        f'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="0">{"".join(parts)}</hp:run>'
+        f'<hp:linesegarray><hp:lineseg textpos="0" vertpos="{vertpos}" '
+        f'vertsize="{max_h}" textheight="{max_h}" baseline="{bl}" spacing="600" '
+        f'horzpos="0" horzsize="{horzsize}" flags="393216"/></hp:linesegarray>'
+        f'</hp:p>'
+    )
+    return xml, eid - eq_id
+
+
+if not hasattr(pdf_to_hwpx, "_original_make_box_xml"):
+    pdf_to_hwpx._original_make_box_xml = pdf_to_hwpx.make_box_xml
+
+
+def _patched_make_box_xml(rows_segments, eq_id_start, width=42520, box_type="condition"):
+    """rect 템플릿 기반 박스. 템플릿 import 실패 시 원본 표 기반 fallback."""
+    if not _RECT_BOX_OK:
+        return pdf_to_hwpx._original_make_box_xml(
+            rows_segments, eq_id_start, width=width, box_type=box_type)
+
+    eid = eq_id_start
+    inner_horz = 39212 if box_type == "condition" else 40012
+    paras = []
+    vp = 0
+    for row in rows_segments:
+        p, used = _box_inner_para_app(row, eid, horzsize=inner_horz, vertpos=vp)
+        eid += used
+        paras.append(p)
+        vp += 1600
+    content_xml = "".join(paras)
+    base = 1100000000 + eid * 13
+    inst = 26000000 + eid * 13
+    zo = eid * 13
+    if box_type == "condition":
+        rect = _fill_box_template(
+            CONDITION_BOX_RECT,
+            ID_0_RECT=base, ID_0_INST=inst, ID_0_Z=zo,
+            COND_CONTENT=content_xml,
+        )
+        eid += 1
+    else:
+        rect = _fill_box_template(
+            BOGI_BOX_RECT,
+            ID_0_RECT=base,     ID_0_INST=inst,     ID_0_Z=zo,
+            ID_1_RECT=base + 1, ID_1_INST=inst + 1, ID_1_Z=zo + 1,
+            ID_2_RECT=base + 2, ID_2_INST=inst + 2, ID_2_Z=zo + 2,
+            BOGI_CONTENT=content_xml,
+        )
+        eid += 3
+    p_xml = (
+        '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+        'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="0">{rect}<hp:t/></hp:run>'
+        '<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" '
+        'textheight="1000" baseline="850" spacing="600" horzpos="0" '
+        'horzsize="42520" flags="393216"/></hp:linesegarray>'
+        '</hp:p>'
+    )
+    return p_xml, eid - eq_id_start
+
+
+pdf_to_hwpx.make_box_xml = _patched_make_box_xml
+
+# ────────────────────────────────────────────────────────────
 # 상수 / 설정
 # ────────────────────────────────────────────────────────────
 

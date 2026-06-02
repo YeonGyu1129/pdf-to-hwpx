@@ -684,6 +684,124 @@ def _empty_para(horzsize=1000):
     )
 
 
+# ──────────────────────────────────────────────────────────
+# rect 기반 박스 — 참고 hwpx 의 도형 박스를 그대로 복사해 내용만 교체
+# ──────────────────────────────────────────────────────────
+
+try:
+    from box_templates import CONDITION_BOX_RECT, BOGI_BOX_RECT
+    _RECT_TEMPLATES_OK = True
+except Exception:
+    _RECT_TEMPLATES_OK = False
+
+
+def _fill_template(template: str, **kwargs) -> str:
+    """템플릿의 {KEY} 자리표시자들을 str.replace 로 치환.
+    str.format 을 쓰지 않는 이유: 내용 paragraphs 가 hwpEQ 의 {} 를 포함해
+    이중 escape 가 번거롭기 때문."""
+    result = template
+    for k, v in kwargs.items():
+        result = result.replace('{' + k + '}', str(v))
+    return result
+
+
+def _box_inner_para(segments: list, eq_id: int,
+                    horzsize: int = 40012, vertpos: int = 0) -> tuple:
+    """박스 안 subList 의 문단 1개 생성 (id=2147483648, sub-list 관용)."""
+    eid = eq_id
+    parts = []
+    max_h = 1000
+    for seg in segments:
+        if seg.get('type') == 'text':
+            txt = _xt(seg['content'])
+            if txt:
+                parts.append(f'<hp:t>{txt}</hp:t>')
+        else:
+            hwpeq = latex_to_hwpeq(seg['content'])
+            _, h, _ = estimate_eq_size(hwpeq)
+            max_h = max(max_h, h)
+            parts.append(_eq_block(eid, hwpeq))
+            eid += 1
+    bl = int(max_h * 0.85)
+    xml = (
+        f'<hp:p id="2147483648" paraPrIDRef="0" styleIDRef="0" '
+        f'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="0">{"".join(parts)}</hp:run>'
+        f'<hp:linesegarray><hp:lineseg textpos="0" vertpos="{vertpos}" '
+        f'vertsize="{max_h}" textheight="{max_h}" baseline="{bl}" spacing="600" '
+        f'horzpos="0" horzsize="{horzsize}" flags="393216"/></hp:linesegarray>'
+        f'</hp:p>'
+    )
+    return xml, eid - eq_id
+
+
+def _substitute_outer_sublist(rect_xml: str, paragraphs_xml: str) -> str:
+    """rect 의 OUTERMOST <hp:subList>...</hp:subList> 내부를 새 paragraphs 로 교체.
+    nested subList 있는 rect (보기 외곽) 에는 호출하지 말 것 — 라벨이 사라짐."""
+    m = re.search(r'<hp:subList\b[^>]*>', rect_xml)
+    if not m:
+        return rect_xml
+    sl_start = m.end()
+    sl_end = rect_xml.rfind('</hp:subList>')  # outermost (가장 늦게 닫힘)
+    if sl_end < sl_start:
+        return rect_xml
+    return rect_xml[:sl_start] + paragraphs_xml + rect_xml[sl_end:]
+
+
+def make_rect_box(rows_segments: list, eq_id_start: int,
+                  box_type: str = "condition") -> tuple:
+    """rect (도형) 기반 박스 생성 — 참고 hwpx 와 동일한 모양.
+    box_type: 'condition' = 단순 사각형 / 'bogi' = [보 기] 라벨이 위에 달린 박스.
+    rows_segments: 2차원 [[seg1, seg2, ...], ...]
+    반환: (paragraph_xml, used_eq_id)
+    """
+    eid = eq_id_start
+    inner_horz = 39212 if box_type == "condition" else 40012
+    paras = []
+    vp = 0
+    for row in rows_segments:
+        p, used = _box_inner_para(row, eid, horzsize=inner_horz, vertpos=vp)
+        eid += used
+        paras.append(p)
+        vp += 1600
+    content_xml = "".join(paras)
+
+    # ID 충돌 회피용 베이스 (rect 마다 3개씩 사용)
+    base = 1100000000 + eid * 13
+    inst = 26000000 + eid * 13
+    zo = eid * 13
+
+    if box_type == "condition":
+        rect = _fill_template(
+            CONDITION_BOX_RECT,
+            ID_0_RECT=base, ID_0_INST=inst, ID_0_Z=zo,
+            COND_CONTENT=content_xml,
+        )
+        eid += 1
+    else:  # bogi
+        # bogi 는 1 outer + 2 nested (label, content) = 3 개 rect, 각각 3 IDs
+        rect = _fill_template(
+            BOGI_BOX_RECT,
+            ID_0_RECT=base,     ID_0_INST=inst,     ID_0_Z=zo,
+            ID_1_RECT=base + 1, ID_1_INST=inst + 1, ID_1_Z=zo + 1,
+            ID_2_RECT=base + 2, ID_2_INST=inst + 2, ID_2_Z=zo + 2,
+            BOGI_CONTENT=content_xml,
+        )
+        eid += 3
+
+    # rect 를 담는 paragraph
+    p_xml = (
+        '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" '
+        'pageBreak="0" columnBreak="0" merged="0">'
+        f'<hp:run charPrIDRef="0">{rect}<hp:t/></hp:run>'
+        '<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" '
+        'textheight="1000" baseline="850" spacing="600" horzpos="0" '
+        'horzsize="42520" flags="393216"/></hp:linesegarray>'
+        '</hp:p>'
+    )
+    return p_xml, eid - eq_id_start
+
+
 def make_box_xml(rows_segments: list, eq_id_start: int,
                  width: int = 42520, box_type: str = "condition") -> tuple:
     """
@@ -693,7 +811,13 @@ def make_box_xml(rows_segments: list, eq_id_start: int,
 
     rows_segments: 각 줄의 segments 리스트 [[row1_segs], [row2_segs], ...]
     반환: (hp:p 전체 xml, 사용된 eq_id 수)
+
+    rect 템플릿이 로드돼 있으면 도형 기반 박스 (참고 hwpx 와 동일 모양) 로
+    출력. 아니면 기존 표(table) 기반으로 fallback.
     """
+    if _RECT_TEMPLATES_OK:
+        return make_rect_box(rows_segments, eq_id_start, box_type=box_type)
+    # ── fallback: 표 기반 ──
     eid = eq_id_start
     para_xmls = []
     for row_segs in rows_segments:
