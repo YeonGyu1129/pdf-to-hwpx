@@ -504,7 +504,7 @@ pdf_to_hwpx.make_section_xml = _patched_make_section_xml
 # ·이미지 등은 그대로 유지. 표식이 없으면 기존 동작(전체 교체).
 # 원본 pdf_to_hwpx.build_hwpx 는 frozen 이라 monkey-patch 로 처리.
 
-TEMPLATE_PLACEHOLDERS = ["{{문제삽입}}", "{{CONTENT}}", "{{문제}}"]
+TEMPLATE_PLACEHOLDERS = ["{{문제삽입}}", "{{문제입력}}", "{{CONTENT}}", "{{문제}}"]
 
 
 def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
@@ -2395,7 +2395,7 @@ def main() -> None:
 1. 한글에서 `template.hwpx` 를 열거나 새 .hwpx 문서 만들기
 2. 제목·학교명·"성명: ___" 같은 줄·머리말·꼬리말·페이지번호 등 자유롭게 디자인
 3. **문제가 들어갈 자리에 다음 표식을 한 줄로 입력**:
-   - `{{문제삽입}}`  (또는 `{{문제}}`, `{{CONTENT}}`)
+   - `{{문제삽입}}`  (또는 `{{문제입력}}`, `{{문제}}`, `{{CONTENT}}` 도 인식)
 4. 다른 이름으로 저장 (예: `시험지_2026.hwpx`)
 5. 위 업로드 칸에 그 파일 올리고 변환
 

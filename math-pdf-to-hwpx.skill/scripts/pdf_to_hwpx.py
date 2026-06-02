@@ -1334,7 +1334,7 @@ def make_image_para(bin_name: str, org_w: int, org_h: int,
 # 그 문단만 생성된 문제 문단들로 치환되고, 템플릿의 나머지 본문(제목·머리말·꼬리말
 # ·학생정보·이미지 등)은 그대로 유지된다. 표식이 없으면 기존 동작(전체 교체).
 
-TEMPLATE_PLACEHOLDERS = ['{{문제삽입}}', '{{CONTENT}}', '{{문제}}']
+TEMPLATE_PLACEHOLDERS = ['{{문제삽입}}', '{{문제입력}}', '{{CONTENT}}', '{{문제}}']
 
 
 def _find_marker_paragraph(section_xml: str, markers: list) -> tuple:
