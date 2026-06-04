@@ -1780,6 +1780,79 @@ def _spacing_keep_solutions(cleaned: list[dict[str, Any]]) -> list[dict[str, Any
     return _insert_problem_spacing(body) + sols
 
 
+_BOX_ITEM_RE = re.compile(r'^\s*[ㄱㄴㄷㄹㅁㅂㅅㅇ㈎㈏㈐㈑㈒]\.\s*')
+
+
+def _absorb_bogi_items_into_box(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """AI 안전망: box(bogi/condition) 직후의 main:False + ㄱ./ㄴ./... 시작 문단들을
+    그 박스 segments 안으로 흡수. 박스의 [보 기] 라벨 row 는 제거 (rect 템플릿이
+    라벨 내장하므로 중복 방지).
+
+    동작:
+    - box=true 엔트리 발견 시
+      · 그 segments 중 '[보 기]' / '[보기]' 만 있는 row 는 제거
+      · 직후 main:False (또는 main 키 없음) + box/role 키 없음 + 첫 text 가
+        ㄱ./ㄴ./ㄷ./㈎./㈏./... 시작인 문단들을 segments 의 row 로 추가
+      · 흡수된 문단들은 일반 paragraph 목록에서 제외
+    """
+    def _is_label_only_row(row):
+        if not isinstance(row, list) or len(row) != 1:
+            return False
+        seg = row[0]
+        if not isinstance(seg, dict) or seg.get('type') != 'text':
+            return False
+        t = str(seg.get('content', '')).strip().replace(' ', '')
+        return t in ('[보기]', '[보 기]', '[ 보 기 ]', '[보기]', '<보기>')
+
+    def _is_item_paragraph(p):
+        if not isinstance(p, dict):
+            return False
+        if p.get('box') or p.get('role') == 'solution' or p.get('main', False):
+            return False
+        if p.get('type') in ('image', 'image_placeholder'):
+            return False
+        segs = p.get('segments')
+        if not isinstance(segs, list) or not segs:
+            return False
+        # 1D segments (일반 문단) 만 처리
+        first = segs[0]
+        if not (isinstance(first, dict) and first.get('type') == 'text'):
+            return False
+        return bool(_BOX_ITEM_RE.match(str(first.get('content', ''))))
+
+    out = []
+    i = 0
+    n = len(problems)
+    while i < n:
+        p = problems[i]
+        if not (isinstance(p, dict) and p.get('box')):
+            out.append(p); i += 1; continue
+
+        # box 안 [보 기]-only row 제거 (있어도 rect 템플릿이 자동 렌더)
+        segs = p.get('segments')
+        if isinstance(segs, list) and segs and isinstance(segs[0], list):
+            cleaned_rows = [r for r in segs if not _is_label_only_row(r)]
+            p = {**p, 'segments': cleaned_rows}
+
+        # 직후 main:False + ㄱ./ㄴ./... 시작 문단들 흡수
+        absorbed_rows = []
+        j = i + 1
+        while j < n and _is_item_paragraph(problems[j]):
+            absorbed_rows.append(problems[j].get('segments', []))
+            j += 1
+        if absorbed_rows:
+            existing_rows = p.get('segments') or []
+            if not (isinstance(existing_rows, list) and existing_rows
+                    and isinstance(existing_rows[0], list)):
+                existing_rows = []
+            p = {**p, 'segments': existing_rows + absorbed_rows}
+            i = j
+        else:
+            i += 1
+        out.append(p)
+    return out
+
+
 def _normalize_solution_groups(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """미주 엔트리 구조 강제 안전망:
       각 문제 번호 그룹마다 정확히 [정답 N] → [풀이] → 풀이 본문 순서로 정렬.
@@ -1921,6 +1994,7 @@ def structure_problems(
 
     progress.progress(1.0, text="문제 구조화 완료")
     cleaned = sanitize_problems(all_problems)
+    cleaned = _absorb_bogi_items_into_box(cleaned)  # 보기 박스 내용 흡수
     cleaned = _normalize_solution_groups(cleaned)  # 미주 [정답]/[풀이] 구조 강제
     return _spacing_keep_solutions(cleaned)
 
@@ -2106,6 +2180,7 @@ def regenerate_with_feedback(
         all_problems.extend(page_problems)
     progress.progress(1.0, text="재변환 완료")
     cleaned = sanitize_problems(all_problems)
+    cleaned = _absorb_bogi_items_into_box(cleaned)  # 보기 박스 내용 흡수
     cleaned = _normalize_solution_groups(cleaned)  # 미주 [정답]/[풀이] 구조 강제
     return _spacing_keep_solutions(cleaned)
 
