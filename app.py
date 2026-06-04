@@ -2371,11 +2371,17 @@ def main() -> None:
 
     if PASTE_AVAILABLE:
         st.markdown("**또는 클립보드에서 이미지 붙여넣기**  `⌘V` / `Ctrl+V` 로 바로 붙여넣기 가능")
+        # paste 컴포넌트의 key 를 dynamic 으로 — 비우기 시 +1 해서 컴포넌트
+        # 새 인스턴스로 만들면 이전 image_data 상태가 리셋됨 (비우기 직후
+        # rerun 에서 같은 이미지가 자동 재추가되는 버그 회피).
+        if "paste_key_seq" not in st.session_state:
+            st.session_state.paste_key_seq = 0
+
         col_paste, col_clear = st.columns([3, 1])
         with col_paste:
             pasted = _paste_image_button(
                 label="📋 클립보드에서 붙여넣기",
-                key="clip_paste",
+                key=f"clip_paste_{st.session_state.paste_key_seq}",
                 errors="ignore",
             )
             if pasted.image_data is not None:
@@ -2389,6 +2395,7 @@ def main() -> None:
         with col_clear:
             if st.session_state.pasted_images and st.button("🗑 비우기"):
                 st.session_state.pasted_images = []
+                st.session_state.paste_key_seq += 1  # paste 컴포넌트 reset
                 st.rerun()
 
         # ⌘V / Ctrl+V 가 눌리면 위의 붙여넣기 버튼을 자동 클릭
