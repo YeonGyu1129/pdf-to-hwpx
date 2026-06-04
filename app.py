@@ -129,6 +129,44 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
 
     latex = _convert_sqrt_balanced(latex)
 
+    # 중첩 \frac 사전 변환 — 원본의 frac 정규식은 1-level brace 만 허용해
+    # 분자/분모에 \sqrt + left/right 같은 중첩이 깊으면 매치 실패 → catch-all
+    # 에 의해 `\frac` 가 통째로 사라지고 분자/분모가 옆에 붙음 (분수가 한 줄로).
+    # balanced-brace 매처로 임의 깊이 안전 처리.
+    def _convert_frac_balanced(src: str) -> str:
+        i, out, n = 0, [], len(src)
+        while i < n:
+            m = re.match(r"\\[df]?frac\{", src[i:])
+            if m:
+                # 분자 시작
+                start = i + m.end()
+                depth, j = 1, start
+                while j < n and depth > 0:
+                    if src[j] == "{": depth += 1
+                    elif src[j] == "}": depth -= 1
+                    j += 1
+                num = src[start : j - 1]
+                # 그 다음이 `{` 여야 분모
+                if j < n and src[j] == "{":
+                    start2 = j + 1
+                    depth, k = 1, start2
+                    while k < n and depth > 0:
+                        if src[k] == "{": depth += 1
+                        elif src[k] == "}": depth -= 1
+                        k += 1
+                    den = src[start2 : k - 1]
+                    # 재귀: 분자/분모 안에 또 frac 있을 수 있음
+                    num = _convert_frac_balanced(num)
+                    den = _convert_frac_balanced(den)
+                    out.append(f"{{{num}}} over {{{den}}}")
+                    i = k
+                    continue
+            out.append(src[i])
+            i += 1
+        return "".join(out)
+
+    latex = _convert_frac_balanced(latex)
+
     out = pdf_to_hwpx._original_latex_to_hwpeq(latex)
 
     # 보호된 \mathit 복원 → it{X}

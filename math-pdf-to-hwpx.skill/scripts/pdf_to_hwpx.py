@@ -355,12 +355,38 @@ def latex_to_hwpeq(latex: str) -> str:
     s = re.sub(r'\\prod_([^{^\s,]+)\^\{([^{}]+)\}',  r' PROD _{\1}^{\2}', s)
     s = re.sub(r'\\prod\b', ' PROD ', s)
 
-    # ── 6. 분수 — 구조 명령어 모두 처리된 후 ──
-    for _ in range(4):
-        s = re.sub(
-            r'\\[df]?frac\{((?:[^{}]|\{[^{}]*\})*)\}\{((?:[^{}]|\{[^{}]*\})*)\}',
-            r'{\1} over {\2}', s
-        )
+    # ── 6. 분수 — balanced-brace 매처로 임의 깊이 안전 처리 ──
+    # (정규식 1-level 만으로는 분자/분모 안에 \sqrt + left/right 같은 중첩이
+    # 깊으면 매치 실패 → catch-all 에 \frac 가 삭제되고 분자/분모가 옆에 붙음.)
+    def _convert_frac_balanced(src):
+        i, out, n = 0, [], len(src)
+        while i < n:
+            m = re.match(r'\\[df]?frac\{', src[i:])
+            if m:
+                start = i + m.end()
+                depth, j = 1, start
+                while j < n and depth > 0:
+                    if src[j] == '{': depth += 1
+                    elif src[j] == '}': depth -= 1
+                    j += 1
+                num = src[start:j-1]
+                if j < n and src[j] == '{':
+                    start2 = j + 1
+                    depth, k = 1, start2
+                    while k < n and depth > 0:
+                        if src[k] == '{': depth += 1
+                        elif src[k] == '}': depth -= 1
+                        k += 1
+                    den = src[start2:k-1]
+                    num = _convert_frac_balanced(num)
+                    den = _convert_frac_balanced(den)
+                    out.append(f'{{{num}}} over {{{den}}}')
+                    i = k
+                    continue
+            out.append(src[i])
+            i += 1
+        return ''.join(out)
+    s = _convert_frac_balanced(s)
 
     # ── 7. 행렬 / 경우 / 조합 ──
     def _matrix(m):
