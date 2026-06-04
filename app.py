@@ -65,7 +65,40 @@ def _paren_boundary(out: str) -> str:
     return out
 
 
+_UNICODE_MATH = {
+    # 연산
+    '×': r' \times ', '÷': r' \div ', '·': r' \cdot ',
+    '±': r' \pm ', '∓': r' \mp ',
+    # 부등호/관계
+    '≠': r' \neq ', '≤': r' \leq ', '≥': r' \geq ',
+    '≈': r' \approx ', '≡': r' \equiv ', '∝': r' \propto ',
+    '∼': r' \sim ', '≃': r' \simeq ', '≅': r' \cong ',
+    # 집합/논리
+    '∈': r' \in ', '∉': r' \notin ',
+    '⊂': r' \subset ', '⊃': r' \supset ',
+    '⊆': r' \subseteq ', '⊇': r' \supseteq ',
+    '∪': r' \cup ', '∩': r' \cap ',
+    '∅': r' \emptyset ', '∀': r' \forall ', '∃': r' \exists ',
+    # 화살표
+    '→': r' \rightarrow ', '←': r' \leftarrow ', '↔': r' \leftrightarrow ',
+    '⇒': r' \Rightarrow ', '⇐': r' \Leftarrow ', '⇔': r' \Leftrightarrow ',
+    '↑': r' \uparrow ', '↓': r' \downarrow ',
+    # 기타
+    '∞': r' \infty ', '∂': r' \partial ', '∇': r' \nabla ',
+    '∴': r' \therefore ', '∵': r' \because ',
+    '⊥': r' \perp ', '∠': r' \angle ', '△': r' \triangle ',
+    '⋯': r' \cdots ', '⋮': r' \vdots ', '⋱': r' \ddots ',
+    '…': r' \ldots ',
+}
+
+
 def _patched_latex_to_hwpeq(latex: str) -> str:
+    # 유니코드 수학 기호를 LaTeX 명령으로 사전 변환 (AI 가 LaTeX 아닌
+    # 유니코드 그대로 추출했을 때 ×/≠ 등이 결과에서 사라지는 문제 방지)
+    for _u, _l in _UNICODE_MATH.items():
+        if _u in latex:
+            latex = latex.replace(_u, _l)
+
     # 입력 LaTeX 의 \mathit{X} 사전 보호 (skill 변환기가 그냥 {X} 로만 출력해
     # 이탤릭 명시 표현이 사라지므로)
     _mathit_placeholders: list[str] = []

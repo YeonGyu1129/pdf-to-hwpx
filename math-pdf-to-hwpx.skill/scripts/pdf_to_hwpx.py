@@ -258,9 +258,36 @@ def ai_extract_problems(raw_text: str) -> list:
 #   7. 다자리 지수/아래첨자 → 중괄호 자동 추가
 # ══════════════════════════════════════════════════════════
 
+_UNICODE_MATH = {
+    '×': r' \times ', '÷': r' \div ', '·': r' \cdot ',
+    '±': r' \pm ', '∓': r' \mp ',
+    '≠': r' \neq ', '≤': r' \leq ', '≥': r' \geq ',
+    '≈': r' \approx ', '≡': r' \equiv ', '∝': r' \propto ',
+    '∼': r' \sim ', '≃': r' \simeq ', '≅': r' \cong ',
+    '∈': r' \in ', '∉': r' \notin ',
+    '⊂': r' \subset ', '⊃': r' \supset ',
+    '⊆': r' \subseteq ', '⊇': r' \supseteq ',
+    '∪': r' \cup ', '∩': r' \cap ',
+    '∅': r' \emptyset ', '∀': r' \forall ', '∃': r' \exists ',
+    '→': r' \rightarrow ', '←': r' \leftarrow ', '↔': r' \leftrightarrow ',
+    '⇒': r' \Rightarrow ', '⇐': r' \Leftarrow ', '⇔': r' \Leftrightarrow ',
+    '↑': r' \uparrow ', '↓': r' \downarrow ',
+    '∞': r' \infty ', '∂': r' \partial ', '∇': r' \nabla ',
+    '∴': r' \therefore ', '∵': r' \because ',
+    '⊥': r' \perp ', '∠': r' \angle ', '△': r' \triangle ',
+    '⋯': r' \cdots ', '⋮': r' \vdots ', '⋱': r' \ddots ',
+    '…': r' \ldots ',
+}
+
+
 def latex_to_hwpeq(latex: str) -> str:
     """LaTeX → 한컴 수식 편집기 코드(hwpEQ) 변환"""
     s = latex.strip().strip('$').strip()
+
+    # ── 0. 유니코드 수학 기호 → LaTeX 명령 (×, ≠, ±, ∴ 등) ──
+    for _u, _l in _UNICODE_MATH.items():
+        if _u in s:
+            s = s.replace(_u, _l)
 
     # ── 1. left/right 크기 조절 괄호 ──
     s = re.sub(r'\\left\s*\(',   ' left ( ', s)
