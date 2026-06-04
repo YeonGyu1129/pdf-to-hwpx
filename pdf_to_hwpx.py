@@ -513,7 +513,7 @@ _SECPR = (
     'hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" '
     'hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>'
     '<hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/>'
-    '<hp:pagePr landscape="PORTRAIT" width="59528" height="84188" gutterType="LEFT_ONLY">'
+    '<hp:pagePr landscape="WIDELY" width="59528" height="84188" gutterType="LEFT_ONLY">'
     '<hp:margin header="4252" footer="4252" gutter="0" '
     'left="8504" right="8504" top="5668" bottom="4252"/>'
     '</hp:pagePr>'

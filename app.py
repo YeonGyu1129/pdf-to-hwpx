@@ -40,10 +40,10 @@ import pdf_to_hwpx  # noqa: E402
 # 원본 _SECPR 은 `landscape="PORTRAIT"` 인데 한컴 HWPX 표준 enum 은
 # NARROWLY(세로) / WIDELY(가로) 이라 PORTRAIT 가 무효 → fallback 으로
 # 가로로 렌더됨. NARROWLY 로 교체해 항상 세로로 출력.
-if 'landscape="PORTRAIT"' in pdf_to_hwpx._SECPR:
-    pdf_to_hwpx._SECPR = pdf_to_hwpx._SECPR.replace(
-        'landscape="PORTRAIT"', 'landscape="NARROWLY"'
-    )
+# WIDELY = 세로(portrait), NARROWLY = 가로(landscape) — 한컴 실제 동작.
+for _bad in ('landscape="PORTRAIT"', 'landscape="NARROWLY"'):
+    if _bad in pdf_to_hwpx._SECPR:
+        pdf_to_hwpx._SECPR = pdf_to_hwpx._SECPR.replace(_bad, 'landscape="WIDELY"')
 
 # ────────────────────────────────────────────────────────────
 # pdf_to_hwpx.latex_to_hwpeq 출력 보정 (monkey-patch)
