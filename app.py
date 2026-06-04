@@ -1123,7 +1123,7 @@ STRUCT_SCOPE_SOLUTIONS_ONLY = r"""## ⚠️ 변환 범위 — 해설 전용 파�
 - 같은 문제 번호의 해설이 여러 줄이면 줄마다 별도 엔트리 (같은 number).
 - 미주 구조는 일반 미주와 동일:
   1) 첫 엔트리: `[정답] {답}` (원본에 [정답] 표기 있으면 그 값)
-  2) 두 번째: `[해설]` 헤더 한 줄
+  2) 두 번째: `[풀이]` 헤더 한 줄  ← 정확히 `[풀이]` 텍스트 한 개
   3) 이후: 풀이 본문 줄별로
 - **본문 problem 으로 잘못 출력하지 말 것** — 반드시 모두 role:"solution"."""
 
@@ -1156,16 +1156,27 @@ STRUCT_ENDNOTE_INSTRUCTION = r"""
    - 정답이 짧은 식이면 `formula`, 단순 텍스트(예: `참`, `거짓`, `없음`)면 `text` 로.
    - 정답을 찾지 못하면 segments 를 `[{"type":"text","content":"[정답] "}]` 만 두기 (빈 자리표시).
 
-2. **두 번째 엔트리 = `[해설]` 헤더 한 줄**
+2. **두 번째 엔트리 = `[풀이]` 헤더 한 줄** ← 정확히 이 텍스트, 다른 거 X
    ```
-   {"number":"3","role":"solution","segments":[{"type":"text","content":"[해설]"}]}
+   {"number":"3","role":"solution","segments":[{"type":"text","content":"[풀이]"}]}
    ```
-   - segments 는 정확히 `[해설]` 텍스트 한 개. 다른 내용 포함 금지.
+   - segments 는 정확히 **`[풀이]`** 텍스트 한 개만. 다른 내용 일절 섞지 말 것.
+   - `[해설]` 이나 `해설` 이나 `풀이) ` 처럼 변형해서 쓰지 말 것 — 정확히 `[풀이]`.
 
 3. **세 번째 이후 엔트리 = 풀이 본문 줄별로 1엔트리**
-   - 원본의 `[풀이]` / `풀이)` / `Sol)` 같은 헤더는 **이미 위에서 `[해설]` 로 대체했으니 본문에 다시 적지 말 것**.
+   - 원본의 `[풀이]` / `풀이)` / `Sol)` 같은 헤더는 **이미 위에서 처리했으니 본문에 다시 적지 말 것**.
    - 풀이 본문의 각 줄을 별도 `role:"solution"` 엔트리로 (모두 같은 number).
    - 본문 줄 안의 수식은 `formula`, 한글 설명은 `text` 로 분해.
+
+### ⛔ 매우 중요 — 절대 어기지 말 것
+같은 문제 번호의 미주 엔트리들은 **반드시 이 순서**, 빠뜨리지 말 것:
+```
+[엔트리1] {"role":"solution","number":"N","segments":[ [정답] + 답 ]}
+[엔트리2] {"role":"solution","number":"N","segments":[ "[풀이]" 한 개만 ]}
+[엔트리3..] {"role":"solution","number":"N","segments":[ 풀이 한 줄 ]}
+[엔트리4..] {"role":"solution","number":"N","segments":[ 풀이 한 줄 ]}
+...
+```
 
 ### 본문 vs 풀이 구분
 - 문제 본문·객관식 보기·조건 박스 → 기존대로 일반 엔트리(`main:true`/`main:false`/`box`).
@@ -1174,7 +1185,6 @@ STRUCT_ENDNOTE_INSTRUCTION = r"""
 
 ### 주의
 - 풀이 내용을 일반 문단(main)으로 잘못 출력하면 본문에 그대로 찍혀버립니다. 반드시 `role:"solution"` 으로.
-- 위 1·2·3 순서를 어기지 마세요 — `[정답]`이 첫 줄, `[해설]`이 두 번째 줄, 나머지가 풀이 본문.
 - 어떤 문제의 풀이인지 번호가 불명확하면, 가장 가까운(직전) 문제 번호로 매칭하세요.
 - **식 번호 기호(㉠㉡㉢, ⓐⓑⓒ, (1)(2)(3) 등)는 원본에 보이는 그대로** 옮기세요.
   앞 문제의 마지막 기호에서 이어붙이지 말 것 — 각 문제는 자기 원본 표기를 그대로 따라갑니다."""
@@ -1699,6 +1709,101 @@ def _spacing_keep_solutions(cleaned: list[dict[str, Any]]) -> list[dict[str, Any
     return _insert_problem_spacing(body) + sols
 
 
+def _normalize_solution_groups(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """미주 엔트리 구조 강제 안전망:
+      각 문제 번호 그룹마다 정확히 [정답 N] → [풀이] → 풀이 본문 순서로 정렬.
+      AI 가 [해설] 로 쓰거나 [정답] 빠뜨려도 자동 보정.
+
+    동작:
+    1) 본문 엔트리(role != 'solution') 는 그대로 통과.
+    2) role=='solution' 엔트리들을 number 기준 그룹핑.
+    3) 그룹 안에서:
+       - 첫 번째 '[정답]' 시작 엔트리를 찾아 맨 앞에 배치.
+         없으면 빈 '[정답]' 자리표시 엔트리 자동 삽입.
+       - 그 다음에 '[풀이]' 한 줄 엔트리. ('[해설]', '[풀이]', '해설', '풀이' 등
+         변형도 정확히 '[풀이]' 로 통일. 없으면 자동 삽입.)
+       - 나머지(본문 풀이) 그대로 뒤에.
+    """
+    def _seg_text(entry):
+        segs = entry.get('segments') or []
+        if not isinstance(segs, list):
+            return ''
+        parts = []
+        for s in segs:
+            if isinstance(s, dict) and s.get('type') == 'text':
+                parts.append(str(s.get('content', '')))
+        return ''.join(parts).strip()
+
+    def _is_answer_entry(entry):
+        t = _seg_text(entry)
+        return t.startswith('[정답]') or t.startswith('정답:') or t.startswith('답:')
+
+    def _is_solution_header(entry):
+        t = _seg_text(entry).strip()
+        # text-only entry containing 풀이/해설 헤더
+        normalized = t.replace(' ', '').replace('\t', '')
+        return normalized in ('[풀이]', '[해설]', '풀이', '해설', '[풀이)', '풀이)')
+
+    def _normalize_answer_entry(entry):
+        """[정답] 시작 엔트리의 segments 첫 text 가 '[정답] ' 으로 시작하도록 정리."""
+        segs = list(entry.get('segments') or [])
+        if not segs:
+            entry['segments'] = [{'type': 'text', 'content': '[정답] '}]
+            return entry
+        # 첫 text segment 의 content 가 [정답] / 정답: / 답: 로 시작하면 '[정답] ' 으로 통일
+        for i, s in enumerate(segs):
+            if isinstance(s, dict) and s.get('type') == 'text':
+                c = str(s.get('content', ''))
+                c = re.sub(r'^\s*(\[정답\]|정답:|답:)\s*', '[정답] ', c)
+                segs[i] = {**s, 'content': c}
+                break
+        entry['segments'] = segs
+        return entry
+
+    # 본문/풀이 분리 + 풀이는 number 별 그룹 (순서 유지)
+    body = []
+    sol_groups: dict = {}        # base_number -> list[entry]
+    sol_order: list = []         # 등장 순서로 base 키
+    for p in problems:
+        if not isinstance(p, dict):
+            body.append(p); continue
+        if p.get('role') != 'solution':
+            body.append(p); continue
+        m = re.match(r'^\s*(\d+)', str(p.get('number', '')))
+        base = m.group(1) if m else ''
+        if base not in sol_groups:
+            sol_groups[base] = []
+            sol_order.append(base)
+        sol_groups[base].append(p)
+
+    # 각 그룹 정규화
+    normalized_sols = []
+    for base in sol_order:
+        group = sol_groups[base]
+        answer_entry = None
+        body_entries = []
+        for e in group:
+            if answer_entry is None and _is_answer_entry(e):
+                answer_entry = _normalize_answer_entry(dict(e))
+                continue
+            if _is_solution_header(e):
+                continue  # 기존 헤더 엔트리는 버림 — 우리가 새로 삽입
+            body_entries.append(e)
+
+        if answer_entry is None:
+            answer_entry = {
+                'number': base, 'role': 'solution',
+                'segments': [{'type': 'text', 'content': '[정답] '}],
+            }
+        header_entry = {
+            'number': base, 'role': 'solution',
+            'segments': [{'type': 'text', 'content': '[풀이]'}],
+        }
+        normalized_sols.extend([answer_entry, header_entry, *body_entries])
+
+    return body + normalized_sols
+
+
 def structure_problems(
     client: Anthropic,
     raw_texts: list[str],
@@ -1745,6 +1850,7 @@ def structure_problems(
 
     progress.progress(1.0, text="문제 구조화 완료")
     cleaned = sanitize_problems(all_problems)
+    cleaned = _normalize_solution_groups(cleaned)  # 미주 [정답]/[풀이] 구조 강제
     return _spacing_keep_solutions(cleaned)
 
 
@@ -1929,6 +2035,7 @@ def regenerate_with_feedback(
         all_problems.extend(page_problems)
     progress.progress(1.0, text="재변환 완료")
     cleaned = sanitize_problems(all_problems)
+    cleaned = _normalize_solution_groups(cleaned)  # 미주 [정답]/[풀이] 구조 강제
     return _spacing_keep_solutions(cleaned)
 
 
@@ -2611,7 +2718,8 @@ def main() -> None:
                         if isinstance(s, dict) and s.get("role") != "solution":
                             s["role"] = "solution"
                             s.pop("main", None)
-                    problems = problems + sol_entries
+                    # 본문 문제와 해설 합친 뒤 [정답]/[풀이] 구조 강제
+                    problems = _normalize_solution_groups(problems + sol_entries)
                     status.update(
                         label=f"해설 파일 처리 완료 — 풀이 {len(sol_entries)}건 추가",
                         state="complete",
