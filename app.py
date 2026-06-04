@@ -1082,8 +1082,14 @@ VISION_PROMPT_TEMPLATE = r"""이 이미지에 있는 **수학 내용**을 정확
 
 
 def build_vision_prompt(mode: str) -> str:
-    """모드별 Vision 프롬프트 생성. mode: 'problems_only' | 'all'"""
-    scope = VISION_SCOPE_ALL if mode == "all" else VISION_SCOPE_PROBLEMS_ONLY
+    """모드별 Vision 프롬프트 생성. mode: 'problems_only' | 'all' | 'solutions_only'
+    solutions_only 는 해설 전용 파일 — Vision 입장에서는 'all' 과 동일하게 다 인식."""
+    if mode == "solutions_only":
+        scope = VISION_SCOPE_ALL  # 다 인식해야 풀이 누락 없음
+    elif mode == "all":
+        scope = VISION_SCOPE_ALL
+    else:
+        scope = VISION_SCOPE_PROBLEMS_ONLY
     return VISION_PROMPT_TEMPLATE.replace("{SCOPE_SECTION}", scope)
 
 
@@ -1100,6 +1106,26 @@ STRUCT_SCOPE_ALL = r"""## ⚠️ 변환 범위 — 모든 내용
 - 문항·풀이·해설·답·교사 주석 **모두 포함**
 - 원본의 순서와 구조를 유지하면서 segments 로 분해
 - 손글씨 필기·주석도 모두 포함"""
+
+# 해설 전용 파일 모드 — 별도 업로드된 해설 파일을 처리할 때
+STRUCT_SCOPE_SOLUTIONS_ONLY = r"""## ⚠️ 변환 범위 — 해설 전용 파일
+이 입력은 **해설/풀이만 들어있는 파일**입니다. 본문 문제는 별도로 처리되므로,
+**모든 내용을 미주(풀이) 엔트리로 출력**하세요.
+
+### 출력 형식 (전부 role:"solution")
+모든 엔트리에 `"role": "solution"` 을 부여하세요. 일반 `main:true` 엔트리 만들지
+말 것 — 해설 파일 안 내용은 전부 풀이 취급.
+
+```
+{"number": "<문제 번호>", "role": "solution", "segments": [...]}
+```
+- `number` 는 해설이 가리키는 **문제의 번호** (해설 파일에서 보이는 번호 그대로).
+- 같은 문제 번호의 해설이 여러 줄이면 줄마다 별도 엔트리 (같은 number).
+- 미주 구조는 일반 미주와 동일:
+  1) 첫 엔트리: `[정답] {답}` (원본에 [정답] 표기 있으면 그 값)
+  2) 두 번째: `[해설]` 헤더 한 줄
+  3) 이후: 풀이 본문 줄별로
+- **본문 problem 으로 잘못 출력하지 말 것** — 반드시 모두 role:"solution"."""
 
 # 미주(endnote) 모드 — '보이는 것 모두' + 토글 ON 일 때만 프롬프트에 추가
 STRUCT_ENDNOTE_INSTRUCTION = r"""
@@ -1440,10 +1466,19 @@ STRUCT_PROMPT_TEMPLATE = r"""다음 수학 문제 텍스트를 JSON 구조로 �
 
 
 def build_struct_prompt(mode: str, endnote: bool = False) -> str:
-    """모드별 Struct 프롬프트 생성. mode: 'problems_only' | 'all'
-    endnote=True 이고 mode=='all' 이면 풀이를 미주로 출력하라는 지시를 덧붙인다."""
-    scope = STRUCT_SCOPE_ALL if mode == "all" else STRUCT_SCOPE_PROBLEMS_ONLY
+    """모드별 Struct 프롬프트 생성.
+    mode: 'problems_only' | 'all' | 'solutions_only'
+    - solutions_only: 해설 전용 파일. 모든 엔트리를 role:"solution" 으로 강제.
+    - all + endnote=True: 일반 모드에서 풀이를 미주로 출력.
+    """
+    if mode == "solutions_only":
+        scope = STRUCT_SCOPE_SOLUTIONS_ONLY
+    elif mode == "all":
+        scope = STRUCT_SCOPE_ALL
+    else:
+        scope = STRUCT_SCOPE_PROBLEMS_ONLY
     prompt = STRUCT_PROMPT_TEMPLATE.replace("{SCOPE_SECTION}", scope)
+    # all 모드 + 미주 토글일 때만 추가 지시. solutions_only 는 scope 자체가 강제하므로 불필요.
     if endnote and mode == "all":
         prompt += STRUCT_ENDNOTE_INSTRUCTION
     return prompt
@@ -2360,9 +2395,23 @@ def main() -> None:
         )
 
     uploaded = st.file_uploader(
-        "문제 파일 업로드 (여러 개 가능)",
+        "📄 문제 파일 업로드 (여러 개 가능)",
         type=["pdf", "jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
+        key="problem_uploader",
+    )
+
+    # ── 해설 파일 (선택) — 올리면 자동으로 미주 처리 ──
+    uploaded_solutions = st.file_uploader(
+        "📖 해설 파일 업로드 (선택 — 올리면 자동으로 미주 처리)",
+        type=["pdf", "jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="solution_uploader",
+        help=(
+            "별도 해설 파일을 올리면 그 안 내용 전부를 풀이로 인식해 "
+            "본문 문제 뒤에 자동으로 미주(1) 2) …) 로 달아줍니다.\n"
+            "사이드바의 '풀이를 미주로 처리' 토글 없이도 자동 동작."
+        ),
     )
 
     # ── 클립보드 붙여넣기 영역 ──
@@ -2493,6 +2542,8 @@ def main() -> None:
         st.info("변환할 파일을 업로드하거나 이미지를 붙여넣으세요.")
         return
 
+    has_solutions = bool(uploaded_solutions)
+
     if not st.button("🚀 변환 시작", type="primary"):
         return
 
@@ -2546,6 +2597,27 @@ def main() -> None:
                 status.update(label="추출된 문제가 없습니다.", state="error")
                 return
             status.update(label=f"문제 {len(problems)}개 구조화 완료", state="complete")
+
+        # 4-a) 해설 파일 별도 처리 (있을 때) → 자동으로 role:"solution" 으로 추출 후 합침
+        if has_solutions:
+            with st.status("해설 파일 처리 중…", expanded=False) as status:
+                sol_paths = collect_input_images(uploaded_solutions, workdir, dpi=dpi)
+                if sol_paths:
+                    sol_raw = vision_recognize(client, sol_paths, mode="solutions_only")
+                    sol_entries = structure_problems(
+                        client, sol_raw, mode="solutions_only", endnote=False)
+                    # 안전망: 혹시 main:True 가 들어왔어도 role:"solution" 으로 강제
+                    for s in sol_entries:
+                        if isinstance(s, dict) and s.get("role") != "solution":
+                            s["role"] = "solution"
+                            s.pop("main", None)
+                    problems = problems + sol_entries
+                    status.update(
+                        label=f"해설 파일 처리 완료 — 풀이 {len(sol_entries)}건 추가",
+                        state="complete",
+                    )
+                else:
+                    status.update(label="해설 파일 처리 건너뜀(이미지 없음)", state="complete")
 
         if show_json:
             with st.expander("🧾 구조화 결과 JSON"):
