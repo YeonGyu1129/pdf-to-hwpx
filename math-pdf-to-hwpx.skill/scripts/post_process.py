@@ -503,6 +503,117 @@ def _insert_problem_spacing(problems: list[dict[str, Any]]) -> list[dict[str, An
 
 
 # ════════════════════════════════════════════════════════════
+# 후처리 안전망
+# ════════════════════════════════════════════════════════════
+
+_BOX_ITEM_RE = re.compile(r'^\s*[ㄱㄴㄷㄹㅁㅂㅅㅇ㈎㈏㈐㈑㈒]\.\s*')
+
+
+def _absorb_bogi_items_into_box(problems):
+    """AI 가 보기 박스를 [보 기] 라벨만 박스로 분류하고 ㄱ./ㄴ./ㄷ. 내용은
+    별도 일반 main:False 문단으로 출력하는 케이스 보정.
+    - box 안 '[보 기]' 만 있는 row 는 제거 (rect 템플릿이 라벨 자동 렌더)
+    - box 직후 main:False + ㄱ./ㄴ./... 시작 문단들을 box segments 로 흡수
+    """
+    def _is_label_only_row(row):
+        if not isinstance(row, list) or len(row) != 1:
+            return False
+        seg = row[0]
+        if not isinstance(seg, dict) or seg.get('type') != 'text':
+            return False
+        t = str(seg.get('content', '')).strip().replace(' ', '')
+        return t in ('[보기]', '[보 기]', '[ 보 기 ]', '<보기>')
+
+    def _is_item_paragraph(p):
+        if not isinstance(p, dict): return False
+        if p.get('box') or p.get('role') == 'solution' or p.get('main', False): return False
+        if p.get('type') in ('image', 'image_placeholder'): return False
+        segs = p.get('segments')
+        if not isinstance(segs, list) or not segs: return False
+        first = segs[0]
+        if not (isinstance(first, dict) and first.get('type') == 'text'): return False
+        return bool(_BOX_ITEM_RE.match(str(first.get('content', ''))))
+
+    out = []
+    i, n = 0, len(problems)
+    while i < n:
+        p = problems[i]
+        if not (isinstance(p, dict) and p.get('box')):
+            out.append(p); i += 1; continue
+        segs = p.get('segments')
+        if isinstance(segs, list) and segs and isinstance(segs[0], list):
+            cleaned_rows = [r for r in segs if not _is_label_only_row(r)]
+            p = {**p, 'segments': cleaned_rows}
+        absorbed = []
+        j = i + 1
+        while j < n and _is_item_paragraph(problems[j]):
+            absorbed.append(problems[j].get('segments', []))
+            j += 1
+        if absorbed:
+            existing = p.get('segments') or []
+            if not (isinstance(existing, list) and existing and isinstance(existing[0], list)):
+                existing = []
+            p = {**p, 'segments': existing + absorbed}
+            i = j
+        else:
+            i += 1
+        out.append(p)
+    return out
+
+
+def _normalize_solution_groups(problems):
+    """미주 엔트리 구조 강제: 각 number 그룹마다
+    [정답 X] → [풀이] → 풀이 본문 순서로. AI 가 [해설] 쓰거나 [정답] 빠뜨려도 보정."""
+    def _seg_text(entry):
+        segs = entry.get('segments') or []
+        if not isinstance(segs, list): return ''
+        return ''.join(str(s.get('content', '')) for s in segs
+                       if isinstance(s, dict) and s.get('type') == 'text').strip()
+
+    def _is_answer(entry):
+        t = _seg_text(entry)
+        return t.startswith('[정답]') or t.startswith('정답:') or t.startswith('답:')
+
+    def _is_header(entry):
+        t = _seg_text(entry).replace(' ', '')
+        return t in ('[풀이]', '[해설]', '풀이', '해설', '[풀이)', '풀이)')
+
+    def _norm_answer(entry):
+        segs = list(entry.get('segments') or [])
+        if not segs:
+            entry['segments'] = [{'type':'text','content':'[정답] '}]; return entry
+        for i, s in enumerate(segs):
+            if isinstance(s, dict) and s.get('type') == 'text':
+                c = re.sub(r'^\s*(\[정답\]|정답:|답:)\s*', '[정답] ', str(s.get('content','')))
+                segs[i] = {**s, 'content': c}; break
+        entry['segments'] = segs; return entry
+
+    body, sol_groups, sol_order = [], {}, []
+    for p in problems:
+        if not isinstance(p, dict) or p.get('role') != 'solution':
+            body.append(p); continue
+        m = re.match(r'^\s*(\d+)', str(p.get('number','')))
+        base = m.group(1) if m else ''
+        sol_groups.setdefault(base, []).append(p)
+        if base not in sol_order: sol_order.append(base)
+
+    normalized = []
+    for base in sol_order:
+        group = sol_groups[base]
+        ans = None; rest = []
+        for e in group:
+            if ans is None and _is_answer(e):
+                ans = _norm_answer(dict(e)); continue
+            if _is_header(e): continue
+            rest.append(e)
+        if ans is None:
+            ans = {'number':base,'role':'solution','segments':[{'type':'text','content':'[정답] '}]}
+        header = {'number':base,'role':'solution','segments':[{'type':'text','content':'[풀이]'}]}
+        normalized.extend([ans, header, *rest])
+    return body + normalized
+
+
+# ════════════════════════════════════════════════════════════
 # 메인 변환 API
 # ════════════════════════════════════════════════════════════
 
@@ -526,6 +637,11 @@ def convert_problems_to_hwpx(
         output_path (성공 시)
     """
     cleaned = sanitize_problems(problems)
+    # 보기 박스 흡수 — AI 가 [보 기] 라벨만 박스로 분류하고 ㄱ./ㄴ./ㄷ. 를
+    # 별도 일반 문단으로 출력한 경우 자동 흡수.
+    cleaned = _absorb_bogi_items_into_box(cleaned)
+    # 미주 [정답]/[풀이] 구조 강제 — AI 가 형식 안 지켜도 정렬.
+    cleaned = _normalize_solution_groups(cleaned)
     # 미주(role=='solution') 엔트리는 문제 간 빈 줄 삽입 대상에서 제외하고 끝에 재배치.
     # (미주 엔트리 사이에 gap dummy 가 끼면 본문에 빈 줄로 새기 때문)
     body = [p for p in cleaned
