@@ -151,7 +151,9 @@ def _patched_latex_to_hwpeq(latex: str) -> str:
                 content = src[start : j - 1]
                 content = _convert_sqrt_balanced(content)  # 재귀적 내부 처리
                 if idx_arg is not None:
-                    out.append(f" sqrt [{idx_arg}] {{{content}}}")
+                    # n제곱근: 한컴 hwpEQ 는 `sqrt [n] {x}` 문법이 없음 (깨짐).
+                    # 반드시 `root {n} of {x}` 로 출력해야 정상 렌더.
+                    out.append(f" root {{{idx_arg}}} of {{{content}}}")
                 else:
                     out.append(f" sqrt {{{content}}}")
                 i = j
