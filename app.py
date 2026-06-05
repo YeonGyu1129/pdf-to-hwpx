@@ -865,8 +865,34 @@ pdf_to_hwpx.make_box_xml = _patched_make_box_xml
 # 상수 / 설정
 # ────────────────────────────────────────────────────────────
 
-VISION_MODEL = "claude-opus-4-5"
-EXTRACT_MODEL = "claude-opus-4-5"
+# 최신 Opus 자동 선택
+# Anthropic API 에는 "항상 최신 Opus" 를 가리키는 단일 문자열이 없다
+# (`-latest` 별칭도 같은 세대의 최신 스냅샷만 가리키고 새 메이저 버전으로는
+#  넘어가지 않음). 따라서 models.list() 로 사용 가능한 모델을 조회해 id 에
+# 'opus' 가 들어가는 것 중 생성일(created_at) 이 가장 최근인 모델을 고른다.
+# 조회 실패(네트워크/권한 등) 시엔 아래 폴백 모델을 사용한다.
+FALLBACK_OPUS_MODEL = "claude-opus-4-5"
+_RESOLVED_OPUS_MODEL = None  # 프로세스 내 1회 해석 후 캐시
+
+
+def resolve_opus_model(client) -> str:
+    """사용 가능한 Opus 중 가장 최신 모델 id 를 반환 (프로세스 내 캐시)."""
+    global _RESOLVED_OPUS_MODEL
+    if _RESOLVED_OPUS_MODEL:
+        return _RESOLVED_OPUS_MODEL
+    chosen = FALLBACK_OPUS_MODEL
+    try:
+        opus = [m for m in client.models.list(limit=100)
+                if "opus" in (getattr(m, "id", "") or "").lower()]
+        if opus:
+            # created_at 최신 우선. 값이 없으면 맨 뒤로.
+            opus.sort(key=lambda m: getattr(m, "created_at", None) or "",
+                      reverse=True)
+            chosen = opus[0].id
+    except Exception:
+        chosen = FALLBACK_OPUS_MODEL
+    _RESOLVED_OPUS_MODEL = chosen
+    return chosen
 # 모델별 max_tokens 한도에 맞춰 설정. 한도를 넘으면 BadRequestError.
 VISION_MAX_TOKENS = 8000
 STRUCT_MAX_TOKENS = 8000
@@ -1670,7 +1696,7 @@ def vision_recognize(
         img_bytes, mime = prepare_image_for_vision(path)
         img_b64 = base64.b64encode(img_bytes).decode()
         resp = client.messages.create(
-            model=VISION_MODEL,
+            model=resolve_opus_model(client),
             max_tokens=VISION_MAX_TOKENS,
             messages=[
                 {
@@ -1736,7 +1762,7 @@ def structure_single(
     """
     prompt = build_struct_prompt(mode, endnote=endnote)
     resp = client.messages.create(
-        model=EXTRACT_MODEL,
+        model=resolve_opus_model(client),
         max_tokens=max_tokens,
         messages=[
             {
@@ -2106,7 +2132,7 @@ def verify_problems(
     ]
 
     resp = client.messages.create(
-        model=EXTRACT_MODEL,
+        model=resolve_opus_model(client),
         max_tokens=VERIFY_MAX_TOKENS,
         messages=[{"role": "user", "content": content_blocks}],
     )
